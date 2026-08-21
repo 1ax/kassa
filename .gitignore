@@ -1,0 +1,17 @@
+# Настройки конкретной кассы: адрес и пароли. В репозиторий не идут.
+config.json
+config.json.tmp
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/

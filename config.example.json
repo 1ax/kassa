@@ -1,0 +1,9 @@
+{
+  "host": "192.168.88.107",
+  "port": 7778,
+  "operator_password": 30,
+  "admin_password": 30,
+  "tax_system": "usn_income",
+  "default_vat": "none",
+  "default_payment_subject": 4
+}

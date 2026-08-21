@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Касса</title>
+<style>
+  :root {
+    --ground: #0E1519;
+    --panel: #18232A;
+    --panel-hi: #1F2D35;
+    --line: #26353E;
+    --text: #C8D4DA;
+    --dim: #6B8291;
+    --brass: #C9973F;
+    --paper: #F2EDE1;
+    --ink: #2A2622;
+    --alarm: #C05540;
+    --ok: #5A9E76;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+    --accent: var(--brass);
+  }
+
+  body.correction { --accent: var(--alarm); }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--ground);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    display: grid;
+    grid-template-columns: 232px minmax(0,1fr) 300px;
+    height: 100%;
+  }
+  body:has(.demo-bar:not([hidden])) .shell { height: calc(100% - 27px); }
+
+  /* ---- приборная панель ---- */
+
+  .instruments {
+    background: var(--panel);
+    border-right: 1px solid var(--line);
+    padding: 20px 18px;
+    overflow-y: auto;
+  }
+
+  .brand {
+    font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 22px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .lamp {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--dim); flex: none;
+    transition: background .3s, box-shadow .3s;
+  }
+  .lamp.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .lamp.off { background: var(--alarm); box-shadow: 0 0 8px var(--alarm); }
+
+  .gauge { margin-bottom: 16px; }
+  .gauge dt {
+    font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 4px;
+  }
+  .gauge dd {
+    margin: 0; font-family: var(--mono);
+    font-size: 15px; font-variant-numeric: tabular-nums;
+    color: var(--text);
+  }
+  .gauge dd.warn { color: var(--brass); }
+  .gauge dd.bad { color: var(--alarm); }
+
+  .rule { height: 1px; background: var(--line); margin: 20px 0; }
+
+  /* ---- рабочая область ---- */
+
+  .work { padding: 20px 26px; overflow-y: auto; }
+
+  .modes { display: flex; gap: 2px; margin-bottom: 24px; }
+  .modes button {
+    flex: 1; padding: 11px 14px; cursor: pointer;
+    background: var(--panel); color: var(--dim);
+    border: 1px solid var(--line);
+    font-family: var(--sans); font-size: 12px;
+    letter-spacing: .1em; text-transform: uppercase;
+    transition: all .15s;
+  }
+  .modes button:first-child { border-radius: 3px 0 0 3px; }
+  .modes button:last-child { border-radius: 0 3px 3px 0; }
+  .modes button[aria-pressed="true"] {
+    background: var(--accent); color: var(--ground);
+    border-color: var(--accent); font-weight: 600;
+  }
+  .modes button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  fieldset { border: none; margin: 0 0 20px; padding: 0; }
+  legend {
+    font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--dim); padding: 0 0 10px;
+  }
+
+  label { display: block; font-size: 11px; color: var(--dim); margin-bottom: 5px; }
+
+  input, select, textarea {
+    width: 100%; padding: 9px 10px;
+    background: var(--ground); color: var(--text);
+    border: 1px solid var(--line); border-radius: 3px;
+    font-family: var(--sans); font-size: 14px;
+  }
+  input[type=number], .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  input:focus, select:focus, textarea:focus {
+    outline: none; border-color: var(--accent);
+  }
+
+  .row { display: grid; gap: 10px; margin-bottom: 12px; }
+  .row.c2 { grid-template-columns: 1fr 1fr; }
+  .row.c3 { grid-template-columns: 2fr 1fr 1fr; }
+
+  /* ---- позиции ---- */
+
+  .pos {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 3px; padding: 14px; margin-bottom: 10px;
+    position: relative;
+  }
+  .pos .drop {
+    position: absolute; top: 10px; right: 10px;
+    background: none; border: none; color: var(--dim);
+    cursor: pointer; font-size: 18px; line-height: 1; padding: 2px 6px;
+  }
+  .pos .drop:hover { color: var(--alarm); }
+
+  .add {
+    width: 100%; padding: 11px; cursor: pointer;
+    background: none; color: var(--dim);
+    border: 1px dashed var(--line); border-radius: 3px;
+    font-family: var(--sans); font-size: 13px;
+  }
+  .add:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ---- кнопки ---- */
+
+  .go {
+    width: 100%; padding: 15px; margin-top: 8px; cursor: pointer;
+    background: var(--accent); color: var(--ground);
+    border: none; border-radius: 3px;
+    font-family: var(--sans); font-size: 14px; font-weight: 600;
+    letter-spacing: .06em;
+  }
+  .go:disabled { opacity: .35; cursor: not-allowed; }
+
+  .minor {
+    padding: 8px 12px; cursor: pointer;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--line); border-radius: 3px;
+    font-family: var(--sans); font-size: 12px; margin-right: 6px;
+  }
+  .minor:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ---- лента ---- */
+
+  .tape-well {
+    background: var(--panel); border-left: 1px solid var(--line);
+    padding: 20px 16px; overflow-y: auto;
+  }
+  .tape-label {
+    font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 12px;
+  }
+  .tape {
+    background: var(--paper); color: var(--ink);
+    font-family: var(--mono); font-size: 11px; line-height: 1.55;
+    padding: 16px 14px 6px;
+    white-space: pre-wrap; word-break: break-word;
+    box-shadow: 0 6px 20px rgba(0,0,0,.4);
+  }
+  /* зубчатый обрыв ленты */
+  .tear {
+    height: 10px; background: var(--paper);
+    -webkit-mask: repeating-linear-gradient(90deg, #000 0 5px, transparent 5px 6px),
+                  linear-gradient(#000 0 0);
+    -webkit-mask-composite: source-in;
+    mask: repeating-linear-gradient(90deg, #000 0 5px, transparent 5px 6px);
+    clip-path: polygon(0 0, 100% 0, 100% 40%, 96% 100%, 92% 40%, 88% 100%, 84% 40%,
+      80% 100%, 76% 40%, 72% 100%, 68% 40%, 64% 100%, 60% 40%, 56% 100%, 52% 40%,
+      48% 100%, 44% 40%, 40% 100%, 36% 40%, 32% 100%, 28% 40%, 24% 100%, 20% 40%,
+      16% 100%, 12% 40%, 8% 100%, 4% 40%, 0 100%);
+    box-shadow: 0 6px 20px rgba(0,0,0,.4);
+  }
+
+  /* ---- сообщения ---- */
+
+  .msg {
+    padding: 12px 14px; border-radius: 3px; margin-bottom: 16px;
+    font-size: 13px; line-height: 1.5;
+    border-left: 3px solid;
+  }
+  .msg.err { background: rgba(192,85,64,.12); border-color: var(--alarm); color: #E5A092; }
+  .msg.ok  { background: rgba(90,158,118,.12); border-color: var(--ok); color: #9FCFB2; }
+  .msg.wait { background: rgba(201,151,63,.12); border-color: var(--brass); color: #E0BE81; }
+
+  .minor:disabled, .add:disabled, .drop:disabled, .modes button:disabled {
+    opacity: .35; cursor: not-allowed;
+  }
+  .minor:disabled:hover { border-color: var(--line); color: var(--text); }
+
+  .demo-bar {
+    background: var(--brass); color: var(--ground);
+    font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+    text-align: center; padding: 6px; font-weight: 600;
+  }
+
+  /* ---- подтверждение ---- */
+
+  dialog {
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--accent); border-radius: 4px;
+    padding: 24px; max-width: 380px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  }
+  dialog::backdrop { background: rgba(5,9,11,.8); }
+  dialog h2 {
+    margin: 0 0 12px; font-size: 15px; letter-spacing: .04em;
+    color: var(--accent);
+  }
+  dialog .sum {
+    font-family: var(--mono); font-size: 26px; font-variant-numeric: tabular-nums;
+    margin: 14px 0; color: var(--text);
+  }
+  dialog .acts { display: flex; gap: 8px; margin-top: 18px; }
+  dialog .acts button { flex: 1; padding: 11px; border-radius: 3px; cursor: pointer;
+    font-family: var(--sans); font-size: 13px; border: 1px solid var(--line); }
+  dialog .yes { background: var(--accent); color: var(--ground); border-color: var(--accent); font-weight: 600; }
+  dialog .no { background: none; color: var(--dim); }
+
+  details summary {
+    cursor: pointer; font-size: 11px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--dim); padding: 8px 0;
+  }
+  details summary:hover { color: var(--accent); }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+  @media (max-width: 900px) {
+    .shell { grid-template-columns: 1fr; height: auto; }
+    .instruments, .tape-well { border: none; border-bottom: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<div class="demo-bar" id="demo-bar" hidden>Демо-режим — касса эмулируется, ничего не печатается</div>
+<div class="shell">
+
+  <!-- приборы -->
+  <aside class="instruments">
+    <div class="brand"><span class="lamp" id="lamp"></span><span id="link">связь…</span></div>
+    <dl>
+      <div class="gauge"><dt>Смена</dt><dd id="g-shift">—</dd></div>
+      <div class="gauge"><dt>Чеков в смене</dt><dd id="g-receipt">—</dd></div>
+      <div class="gauge"><dt>Режим</dt><dd id="g-mode" style="font-size:12px">—</dd></div>
+      <div class="rule"></div>
+      <div class="gauge"><dt>Очередь в ОФД</dt><dd id="g-ofd">—</dd></div>
+      <div class="gauge"><dt>Последний ФД</dt><dd id="g-fd">—</dd></div>
+      <div class="gauge"><dt>ФН</dt><dd id="g-fn" style="font-size:11px">—</dd></div>
+      <div class="gauge"><dt>Часы кассы</dt><dd id="g-clock" style="font-size:12px">—</dd></div>
+      <div class="gauge"><dt>Аппарат</dt><dd id="g-device" style="font-size:11px">—</dd></div>
+    </dl>
+    <div class="rule"></div>
+    <button class="minor" onclick="act('/api/shift/open','Смена открыта')">Открыть смену</button>
+    <button class="minor" onclick="act('/api/report/x','X-отчёт напечатан')">X-отчёт</button>
+    <button class="minor" onclick="closeShift()">Закрыть смену</button>
+    <button class="minor" onclick="act('/api/receipt/cancel','Чек аннулирован')">Аннулировать чек</button>
+  </aside>
+
+  <!-- работа -->
+  <main class="work">
+    <div id="msg"></div>
+
+    <div class="modes">
+      <button id="m-sale" aria-pressed="true" onclick="setMode('sale')">Кассовый чек</button>
+      <button id="m-corr" aria-pressed="false" onclick="setMode('corr')">Чек коррекции</button>
+    </div>
+
+    <!-- обычный чек -->
+    <section id="pane-sale">
+      <fieldset>
+        <legend>Расчёт</legend>
+        <div class="row c2">
+          <div>
+            <label for="op">Тип операции</label>
+            <select id="op" onchange="draw()">
+              <option value="1">Приход</option>
+              <option value="2">Возврат прихода</option>
+              <option value="3">Расход</option>
+              <option value="4">Возврат расхода</option>
+            </select>
+          </div>
+          <div>
+            <label for="sno">Налогообложение</label>
+            <select id="sno" onchange="draw()">
+              <option value="usn_income">УСН доход</option>
+              <option value="usn_profit">УСН доход минус расход</option>
+              <option value="osn">ОСН</option>
+              <option value="psn">ПСН</option>
+              <option value="envd">ЕНВД</option>
+              <option value="esn">ЕСП</option>
+            </select>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Позиции</legend>
+        <div id="positions"></div>
+        <button class="add" onclick="addPos()">+ Добавить позицию</button>
+      </fieldset>
+
+      <fieldset>
+        <legend>Оплата</legend>
+        <div class="row c2">
+          <div>
+            <label for="cash">Наличными, ₽</label>
+            <input type="number" id="cash" step="0.01" min="0" value="0" oninput="draw()">
+          </div>
+          <div>
+            <label for="card">Электронными, ₽</label>
+            <input type="number" id="card" step="0.01" min="0" value="0" oninput="draw()">
+          </div>
+        </div>
+        <button class="minor" onclick="payAll('cash')">Всё наличными</button>
+        <button class="minor" onclick="payAll('card')">Всё электронными</button>
+      </fieldset>
+
+      <button class="go" onclick="confirmSale()">Пробить чек</button>
+    </section>
+
+    <!-- чек коррекции -->
+    <section id="pane-corr" hidden>
+      <div class="msg err" style="margin-bottom:20px">
+        Чек коррекции меняет фискальную отчётность и уходит в ОФД без возможности отмены.
+        Проверьте сумму и основание до нажатия.
+      </div>
+
+      <fieldset>
+        <legend>Коррекция</legend>
+        <div class="row c2">
+          <div>
+            <label for="c-type">Тип</label>
+            <select id="c-type" onchange="draw()">
+              <option value="0">Самостоятельно</option>
+              <option value="1">По предписанию</option>
+            </select>
+          </div>
+          <div>
+            <label for="c-op">Признак расчёта</label>
+            <select id="c-op" onchange="draw()">
+              <option value="1">Приход</option>
+              <option value="2">Возврат прихода</option>
+              <option value="3">Расход</option>
+              <option value="4">Возврат расхода</option>
+            </select>
+          </div>
+        </div>
+        <div class="row c2">
+          <div>
+            <label for="c-total">Сумма расчёта, ₽</label>
+            <input type="number" id="c-total" step="0.01" min="0" value="0" oninput="syncCorr()">
+          </div>
+          <div>
+            <label for="c-sno">Налогообложение</label>
+            <select id="c-sno" onchange="draw()">
+              <option value="usn_income">УСН доход</option>
+              <option value="usn_profit">УСН доход минус расход</option>
+              <option value="osn">ОСН</option>
+              <option value="psn">ПСН</option>
+              <option value="envd">ЕНВД</option>
+              <option value="esn">ЕСП</option>
+            </select>
+          </div>
+        </div>
+        <div class="row c2">
+          <div>
+            <label for="c-cash">Наличными, ₽</label>
+            <input type="number" id="c-cash" step="0.01" min="0" value="0" oninput="draw()">
+          </div>
+          <div>
+            <label for="c-card">Электронными, ₽</label>
+            <input type="number" id="c-card" step="0.01" min="0" value="0" oninput="draw()">
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Основание</legend>
+        <div class="row">
+          <div>
+            <label for="c-desc">Описание коррекции</label>
+            <input id="c-desc" placeholder="Например: не пробит чек за стоянку" oninput="draw()">
+          </div>
+        </div>
+        <div class="row c2">
+          <div>
+            <label for="c-date">Дата документа основания</label>
+            <input type="date" id="c-date" oninput="draw()">
+          </div>
+          <div>
+            <label for="c-num">Номер документа основания</label>
+            <input id="c-num" placeholder="б/н" oninput="draw()">
+          </div>
+        </div>
+      </fieldset>
+
+      <button class="go" onclick="confirmCorr()">Пробить чек коррекции</button>
+    </section>
+
+    <div class="rule"></div>
+    <details>
+      <summary>Подключение</summary>
+      <div class="row c2" style="margin-top:12px">
+        <div><label for="s-host">Адрес кассы</label><input id="s-host" class="num"></div>
+        <div><label for="s-port">Порт</label><input type="number" id="s-port" class="num"></div>
+      </div>
+      <div class="row c2">
+        <div><label for="s-op-pwd">Пароль оператора</label><input type="number" id="s-op-pwd" class="num"></div>
+        <div><label for="s-ad-pwd">Пароль сисадмина</label><input type="number" id="s-ad-pwd" class="num"></div>
+      </div>
+      <p style="font-size:11px;color:var(--dim);line-height:1.5;margin:10px 0 0">
+        У Штрих-М по умолчанию оба пароля — 30. Позиции чека уходят под паролем
+        оператора, отчёты и фискальные операции — под паролем сисадмина.
+      </p>
+      <button class="minor" onclick="saveCfg()">Сохранить</button>
+    </details>
+
+    <details>
+      <summary>Журнал обмена с кассой</summary>
+      <p style="font-size:11px;color:var(--dim);margin:8px 0">
+        Кадры последней операции. Пригодится, если касса ответит непонятной ошибкой.
+      </p>
+      <pre id="wire" style="font-family:var(--mono);font-size:10px;line-height:1.5;
+           color:var(--dim);background:var(--ground);border:1px solid var(--line);
+           border-radius:3px;padding:10px;max-height:220px;overflow:auto;
+           white-space:pre-wrap;word-break:break-all;margin:0">—</pre>
+      <button class="minor" onclick="loadLog()">Обновить журнал</button>
+    </details>
+  </main>
+
+  <!-- лента -->
+  <aside class="tape-well">
+    <div class="tape-label">Что напечатает касса</div>
+    <div class="tape" id="tape"></div>
+    <div class="tear"></div>
+  </aside>
+</div>
+
+<dialog id="confirm">
+  <h2 id="dlg-title"></h2>
+  <div id="dlg-body" style="font-size:13px;line-height:1.6;color:var(--dim)"></div>
+  <div class="sum" id="dlg-sum"></div>
+  <div class="acts">
+    <button class="no" onclick="document.getElementById('confirm').close()">Отмена</button>
+    <button class="yes" id="dlg-yes"></button>
+  </div>
+</dialog>
+
+<script>
+const W = 32;               // ширина чековой ленты в символах
+let mode = 'sale';
+let positions = [];
+
+const $ = id => document.getElementById(id);
+const rub = n => Number(n || 0).toFixed(2);
+
+// --- позиции ---
+
+function addPos() {
+  positions.push({ name: '', qty: 1, price: 0, vat: 'none', subject: 4, method: 4 });
+  renderPos(); draw();
+}
+function dropPos(i) { positions.splice(i, 1); renderPos(); draw(); }
+function setPos(i, k, v) { positions[i][k] = v; draw(); }
+
+function renderPos() {
+  $('positions').innerHTML = positions.map((p, i) => `
+    <div class="pos">
+      <button class="drop" onclick="dropPos(${i})" title="Убрать позицию">&times;</button>
+      <div class="row"><div>
+        <label>Наименование</label>
+        <input value="${esc(p.name)}" oninput="setPos(${i},'name',this.value)"
+               placeholder="Стоянка яхты, июль">
+      </div></div>
+      <div class="row c3">
+        <div><label>Цена, ₽</label>
+          <input type="number" step="0.01" min="0" value="${p.price}"
+                 oninput="setPos(${i},'price',+this.value)"></div>
+        <div><label>Кол-во</label>
+          <input type="number" step="0.001" min="0" value="${p.qty}"
+                 oninput="setPos(${i},'qty',+this.value)"></div>
+        <div><label>НДС</label>
+          <select onchange="setPos(${i},'vat',this.value)">
+            ${opt('none','Без НДС',p.vat)}${opt('20','20%',p.vat)}${opt('10','10%',p.vat)}
+            ${opt('0','0%',p.vat)}${opt('20/120','20/120',p.vat)}${opt('10/110','10/110',p.vat)}
+          </select></div>
+      </div>
+      <div class="row c2">
+        <div><label>Предмет расчёта</label>
+          <select onchange="setPos(${i},'subject',+this.value)">
+            ${opt(4,'Услуга',p.subject)}${opt(1,'Товар',p.subject)}
+            ${opt(3,'Работа',p.subject)}${opt(13,'Иное',p.subject)}
+          </select></div>
+        <div><label>Способ расчёта</label>
+          <select onchange="setPos(${i},'method',+this.value)">
+            ${opt(4,'Полный расчёт',p.method)}${opt(1,'Предоплата 100%',p.method)}
+            ${opt(3,'Аванс',p.method)}${opt(7,'Оплата кредита',p.method)}
+          </select></div>
+      </div>
+    </div>`).join('');
+}
+
+const opt = (v, t, cur) => `<option value="${v}" ${v == cur ? 'selected' : ''}>${t}</option>`;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+const total = () => positions.reduce((s, p) => s + p.qty * p.price, 0);
+
+function payAll(which) {
+  $(which === 'cash' ? 'cash' : 'card').value = rub(total());
+  $(which === 'cash' ? 'card' : 'cash').value = '0';
+  draw();
+}
+function syncCorr() {
+  $('c-cash').value = rub($('c-total').value);
+  $('c-card').value = '0';
+  draw();
+}
+
+// --- режим ---
+
+function setMode(m) {
+  mode = m;
+  $('m-sale').setAttribute('aria-pressed', m === 'sale');
+  $('m-corr').setAttribute('aria-pressed', m === 'corr');
+  $('pane-sale').hidden = m !== 'sale';
+  $('pane-corr').hidden = m !== 'corr';
+  document.body.classList.toggle('correction', m === 'corr');
+  draw();
+}
+
+// --- лента ---
+
+const pad = (l, r) => {
+  const gap = Math.max(1, W - l.length - r.length);
+  return l + ' '.repeat(gap) + r;
+};
+const center = t => ' '.repeat(Math.max(0, Math.floor((W - t.length) / 2))) + t;
+const line = () => '-'.repeat(W);
+
+function draw() {
+  const t = mode === 'sale' ? drawSale() : drawCorr();
+  $('tape').textContent = t;
+}
+
+function drawSale() {
+  const ops = { 1: 'ПРИХОД', 2: 'ВОЗВРАТ ПРИХОДА', 3: 'РАСХОД', 4: 'ВОЗВРАТ РАСХОДА' };
+  const L = [center('КАССОВЫЙ ЧЕК'), center(ops[$('op').value]), line()];
+  positions.forEach((p, i) => {
+    L.push(`${i + 1}. ${p.name || '(без названия)'}`);
+    L.push(pad(`  ${p.qty} x ${rub(p.price)}`, rub(p.qty * p.price)));
+  });
+  if (!positions.length) L.push('  нет позиций');
+  L.push(line());
+  L.push(pad('ИТОГ', rub(total())));
+  const c = +$('cash').value, e = +$('card').value;
+  if (c) L.push(pad('  НАЛИЧНЫМИ', rub(c)));
+  if (e) L.push(pad('  ЭЛЕКТРОННЫМИ', rub(e)));
+  const change = c + e - total();
+  if (change > 0.001) L.push(pad('  СДАЧА', rub(change)));
+  L.push(line());
+  L.push(snoName($('sno').value));
+  return L.join('\n');
+}
+
+function drawCorr() {
+  const ops = { 1: 'ПРИХОД', 2: 'ВОЗВРАТ ПРИХОДА', 3: 'РАСХОД', 4: 'ВОЗВРАТ РАСХОДА' };
+  const L = [center('КАССОВЫЙ ЧЕК'), center('КОРРЕКЦИИ'), center(ops[$('c-op').value]), line()];
+  L.push($('c-type').value === '0' ? 'ТИП: САМОСТОЯТЕЛЬНО' : 'ТИП: ПО ПРЕДПИСАНИЮ');
+  if ($('c-desc').value) L.push('ОСНОВАНИЕ: ' + $('c-desc').value);
+  if ($('c-date').value) L.push('ДАТА ДОК.: ' + $('c-date').value.split('-').reverse().join('.'));
+  if ($('c-num').value) L.push('НОМЕР ДОК.: ' + $('c-num').value);
+  L.push(line());
+  L.push(pad('ИТОГ', rub($('c-total').value)));
+  const c = +$('c-cash').value, e = +$('c-card').value;
+  if (c) L.push(pad('  НАЛИЧНЫМИ', rub(c)));
+  if (e) L.push(pad('  ЭЛЕКТРОННЫМИ', rub(e)));
+  L.push(line());
+  L.push(snoName($('c-sno').value));
+  return L.join('\n');
+}
+
+const snoName = v => ({
+  usn_income: 'СНО: УСН ДОХОД', usn_profit: 'СНО: УСН Д-Р', osn: 'СНО: ОСН',
+  psn: 'СНО: ПСН', envd: 'СНО: ЕНВД', esn: 'СНО: ЕСП'
+}[v] || '');
+
+// --- подтверждение и отправка ---
+
+function ask(title, body, sum, yesLabel, fn) {
+  $('dlg-title').textContent = title;
+  $('dlg-body').textContent = body;
+  $('dlg-sum').textContent = sum;
+  const yes = $('dlg-yes');
+  yes.textContent = yesLabel;
+  yes.onclick = () => { $('confirm').close(); fn(); };
+  $('confirm').showModal();
+}
+
+function confirmSale() {
+  if (!positions.length) return say('В чеке нет ни одной позиции', 'err');
+  if (positions.some(p => !p.name.trim())) return say('У каждой позиции должно быть наименование', 'err');
+  if (total() <= 0) return say('Сумма чека — ноль. Проверьте цены и количество.', 'err');
+  const paid = +$('cash').value + +$('card').value;
+  if (paid < total() - 0.001) return say(`Оплата ${rub(paid)} меньше итога ${rub(total())}`, 'err');
+  ask('Пробить кассовый чек?', `Позиций: ${positions.length}. Чек будет напечатан и уйдёт в ОФД.`,
+      rub(total()) + ' ₽', 'Пробить', sendSale);
+}
+
+function confirmCorr() {
+  const t = +$('c-total').value;
+  if (t <= 0) return say('Укажите сумму расчёта', 'err');
+  if (!$('c-desc').value.trim()) return say('Укажите описание коррекции', 'err');
+  const paid = +$('c-cash').value + +$('c-card').value;
+  if (Math.abs(paid - t) > 0.01) return say(`Суммы оплаты (${rub(paid)}) не сходятся с итогом (${rub(t)})`, 'err');
+  ask('Пробить чек коррекции?',
+      'Документ уйдёт в ОФД и не может быть отменён. Убедитесь, что основание указано верно.',
+      rub(t) + ' ₽', 'Пробить коррекцию', sendCorr);
+}
+
+// Пока касса печатает, все кнопки действий заблокированы: двойной клик по
+// «Пробить» — это два фискальных чека, отменить которые уже нельзя.
+let busy = false;
+
+function setBusy(on, what) {
+  busy = on;
+  document.querySelectorAll('.go, .minor, .modes button, .add, .drop')
+    .forEach(b => b.disabled = on);
+  document.body.style.cursor = on ? 'progress' : '';
+  if (on) say(what || 'Касса работает, идёт печать…', 'wait');
+}
+
+async function guard(what, fn) {
+  if (busy) return;
+  setBusy(true, what);
+  try { await fn(); } finally { setBusy(false); }
+}
+
+async function post(url, body) {
+  const r = await fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : null
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail || 'Не удалось выполнить операцию');
+  return j;
+}
+
+async function sendSale() { return guard('Пробиваю чек, касса печатает…', _sendSale); }
+async function _sendSale() {
+  try {
+    const r = await post('/api/receipt', {
+      op_type: +$('op').value,
+      positions: positions.map(p => ({
+        name: p.name, qty: p.qty, price: p.price, vat: p.vat,
+        payment_subject: p.subject, payment_method: p.method
+      })),
+      cash: +$('cash').value, electronic: +$('card').value,
+      tax_system: $('sno').value
+    });
+    say(`Чек пробит. ФД № ${r.fd_number}, фискальный признак ${r.fiscal_sign}` +
+        (r.change > 0 ? `, сдача ${rub(r.change)} ₽` : ''), 'ok');
+    positions = []; addPos();
+    $('cash').value = 0; $('card').value = 0;
+    draw(); status(); loadLog();
+  } catch (e) { say(e.message, 'err'); }
+}
+
+async function sendCorr() { return guard('Пробиваю чек коррекции…', _sendCorr); }
+async function _sendCorr() {
+  try {
+    const r = await post('/api/correction', {
+      correction_type: +$('c-type').value,
+      op_type: +$('c-op').value,
+      total: +$('c-total').value,
+      cash: +$('c-cash').value, electronic: +$('c-card').value,
+      tax_system: $('c-sno').value,
+      reason_description: $('c-desc').value,
+      reason_date: $('c-date').value || new Date().toISOString().slice(0, 10),
+      reason_number: $('c-num').value || 'б/н'
+    });
+    say(`Чек коррекции пробит. ФД № ${r.fd_number}, фискальный признак ${r.fiscal_sign}`, 'ok');
+    status(); loadLog();
+  } catch (e) { say(e.message, 'err'); }
+}
+
+async function act(url, okText) {
+  return guard('Касса выполняет команду…', async () => {
+    try { await post(url); say(okText, 'ok'); status(); loadLog(); }
+    catch (e) { say(e.message, 'err'); loadLog(); }
+  });
+}
+
+function closeShift() {
+  ask('Закрыть смену?', 'Касса напечатает Z-отчёт с гашением.', '', 'Закрыть смену',
+      () => act('/api/shift/close', 'Смена закрыта, Z-отчёт напечатан'));
+}
+
+function say(text, kind) {
+  $('msg').innerHTML = `<div class="msg ${kind}">${esc(text)}</div>`;
+  if (kind === 'ok') setTimeout(() => { $('msg').innerHTML = ''; }, 9000);
+}
+
+// --- приборы ---
+
+async function status() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    const lamp = $('lamp');
+    $('demo-bar').hidden = !s.demo;
+    if (!s.online) {
+      lamp.className = 'lamp off';
+      $('link').textContent = s.busy ? 'касса занята' : 'нет связи';
+      ['g-shift','g-receipt','g-mode','g-ofd','g-fd','g-fn','g-clock','g-device']
+        .forEach(id => $(id).textContent = '\u2014');
+      return;
+    }
+    lamp.className = 'lamp on';
+    $('link').textContent = s.busy ? 'касса занята' : (s.demo ? 'эмулятор' : 'касса на связи');
+    $('g-shift').textContent = s.shift_open ? `\u2116 ${s.shift_number} открыта` : 'закрыта';
+    $('g-shift').className = s.shift_open ? '' : 'warn';
+    $('g-receipt').textContent = s.receipt_number;
+    $('g-mode').textContent = s.mode;
+    $('g-mode').className = s.receipt_open ? 'warn' : '';
+    $('g-ofd').textContent = s.ofd_queue;
+    $('g-ofd').className = s.ofd_queue > 0 ? 'warn' : '';
+    $('g-fd').textContent = s.last_fd;
+    $('g-fn').textContent = s.fn_number || '\u2014';
+    $('g-clock').textContent = s.datetime;
+    // Дату и время в фискальный документ ставит касса, а не компьютер.
+    // Уехавшие часы — повод сходить в настройки ККТ до того, как пробивать.
+    $('g-clock').className = clockDrift(s.datetime) > 5 ? 'warn' : '';
+    $('g-device').textContent = deviceName
+      ? deviceName + (s.serial ? ` \u2116 ${s.serial}` : '')
+      : '\u2014';
+
+    // Бумага: бит 1 флагов ККТ, «рулон чековой ленты». Проверен на живой кассе.
+    // Датчик крышки в этой прошивке достоверно не опознан, поэтому тревогу
+    // по крышке не поднимаем — ложное «крышка открыта» каждые 5 секунд хуже,
+    // чем его отсутствие.
+    if (!s.paper && !busy) say('В кассе кончилась бумага', 'err');
+    if (s.receipt_open && !busy)
+      say('В кассе висит открытый чек. Аннулируйте его перед новой операцией.', 'err');
+  } catch (e) {
+    $('lamp').className = 'lamp off';
+    $('link').textContent = 'сервер недоступен';
+  }
+}
+
+// Расхождение часов кассы с часами компьютера, в минутах.
+function clockDrift(stamp) {
+  const m = /^(\d{2})\.(\d{2})\.(\d{4}) (\d{2}):(\d{2}):(\d{2})$/.exec(stamp || '');
+  if (!m) return 0;
+  const [, d, mo, y, hh, mi, ss] = m;
+  const kkt = new Date(+y, +mo - 1, +d, +hh, +mi, +ss);
+  return Math.abs(kkt - new Date()) / 60000;
+}
+
+let deviceName = '';
+async function loadDevice() {
+  try {
+    const d = await (await fetch('/api/device')).json();
+    deviceName = d.name || '';
+  } catch (e) { deviceName = ''; }
+}
+
+async function loadLog() {
+  try {
+    const j = await (await fetch('/api/log')).json();
+    $('wire').textContent = j.lines.length ? j.lines.join('\n') : 'обмена ещё не было';
+  } catch (e) { $('wire').textContent = 'журнал недоступен'; }
+}
+
+async function loadCfg() {
+  const c = await (await fetch('/api/config')).json();
+  $('s-host').value = c.host;
+  $('s-port').value = c.port;
+  $('s-op-pwd').value = c.operator_password;
+  $('s-ad-pwd').value = c.admin_password;
+  $('sno').value = c.tax_system; $('c-sno').value = c.tax_system;
+  $('demo-bar').hidden = !c.demo;
+}
+async function saveCfg() {
+  try {
+    await post('/api/config', {
+      host: $('s-host').value.trim(), port: +$('s-port').value,
+      operator_password: +$('s-op-pwd').value,
+      admin_password: +$('s-ad-pwd').value,
+      tax_system: $('sno').value
+    });
+    say('Настройки сохранены', 'ok'); status();
+  } catch (e) { say(e.message, 'err'); }
+}
+
+// --- старт ---
+
+$('c-date').value = new Date().toISOString().slice(0, 10);
+addPos();
+loadCfg();
+loadDevice().then(status);
+loadLog();
+draw();
+
+// Каждый опрос — пять команд по TCP к кассе. На скрытой вкладке это бессмысленно
+// и мешает: касса занята обслуживанием фонового опроса вместо печати.
+let poll = null;
+function startPolling() { if (!poll) poll = setInterval(status, 5000); }
+function stopPolling() { clearInterval(poll); poll = null; }
+document.addEventListener('visibilitychange',
+  () => document.hidden ? stopPolling() : (status(), startPolling()));
+if (!document.hidden) startPolling();
+</script>
+</body>
+</html>
