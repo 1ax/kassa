@@ -163,6 +163,8 @@
     font-family: var(--sans); font-size: 12px; margin-right: 6px;
   }
   .minor:hover { border-color: var(--accent); color: var(--accent); }
+  .minor.quit { color: var(--dim); }
+  .minor.quit:hover { border-color: var(--alarm); color: var(--alarm); }
 
   /* ---- лента ---- */
 
@@ -277,6 +279,8 @@
     <button class="minor" onclick="act('/api/report/x','X-отчёт напечатан')">X-отчёт</button>
     <button class="minor" onclick="closeShift()">Закрыть смену</button>
     <button class="minor" onclick="act('/api/receipt/cancel','Чек аннулирован')">Аннулировать чек</button>
+    <div class="rule"></div>
+    <button class="minor quit" onclick="quitServer()">Выключить кассу</button>
   </aside>
 
   <!-- работа -->
@@ -713,6 +717,21 @@ async function act(url, okText) {
   });
 }
 
+function quitServer() {
+  ask('Выключить кассу?',
+      'Сервер остановится, страница перестанет работать. Касса и смена не тронуты — ' +
+      'запустить обратно можно иконкой в Программах.',
+      '', 'Выключить', async () => {
+    try {
+      await post('/api/quit');
+      stopPolling();
+      document.body.innerHTML =
+        '<div style="padding:60px;text-align:center;color:var(--dim);' +
+        'font-family:var(--sans)">Касса выключена. Вкладку можно закрыть.</div>';
+    } catch (e) { say(e.message, 'err'); }
+  });
+}
+
 function closeShift() {
   ask('Закрыть смену?', 'Касса напечатает Z-отчёт с гашением.', '', 'Закрыть смену',
       () => act('/api/shift/close', 'Смена закрыта, Z-отчёт напечатан'));
@@ -732,7 +751,13 @@ async function status() {
     $('demo-bar').hidden = !s.demo;
     if (!s.online) {
       lamp.className = 'lamp off';
-      $('link').textContent = s.busy ? 'касса занята' : 'нет связи';
+      $('link').textContent = s.busy ? 'касса занята'
+        : (s.no_host ? 'адрес не задан' : 'нет связи');
+      if (s.no_host && !hostPrompted) {
+        hostPrompted = true;
+        say('Адрес кассы не задан. Укажите его в блоке «Подключение» внизу страницы.', 'err');
+        document.querySelector('details').open = true;
+      }
       ['g-shift','g-receipt','g-mode','g-ofd','g-fd','g-fn','g-clock','g-device']
         .forEach(id => $(id).textContent = '\u2014');
       return;
@@ -778,6 +803,7 @@ function clockDrift(stamp) {
   return Math.abs(kkt - new Date()) / 60000;
 }
 
+let hostPrompted = false;      // просим адрес один раз, а не каждый опрос
 let deviceName = '';
 async function loadDevice() {
   try {
@@ -810,6 +836,7 @@ async function saveCfg() {
       admin_password: +$('s-ad-pwd').value,
       tax_system: $('sno').value
     });
+    hostPrompted = false;
     say('Настройки сохранены', 'ok'); status();
   } catch (e) { say(e.message, 'err'); }
 }

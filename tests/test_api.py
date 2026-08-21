@@ -5,6 +5,8 @@
 ничего не печатают и никуда не отправляют.
 """
 
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -166,3 +168,68 @@ def test_чек_на_нулевую_сумму_не_уходит(client):
     assert r.status_code == 400
     assert "ноль" in r.json()["detail"]
     assert demo.DemoKKT.state["receipt_open"] is False
+
+
+def test_ping_опознаёт_наш_сервер(client):
+    body = client.get("/api/ping").json()
+    assert body["app"] == "kassa"
+    assert body["pid"] > 0
+
+
+def test_пустой_адрес_кассы_не_сохраняется(client):
+    r = client.post("/api/config", json={"host": "   "})
+    assert r.status_code == 400
+    assert "пустым" in r.json()["detail"]
+
+
+def test_конфиг_создаётся_при_первом_запуске(tmp_path, monkeypatch):
+    """Адрес кассы должен жить в config.json, а не в коде."""
+    target = tmp_path / "config.json"
+    monkeypatch.setattr(kassa_app, "CONFIG_PATH", target)
+    monkeypatch.setattr(kassa_app, "BASE", tmp_path)
+    (tmp_path / "config.example.json").write_text(
+        '{"host": "10.1.2.3", "port": 7778}', encoding="utf-8")
+
+    assert not target.exists()
+    kassa_app.ensure_config()
+    assert target.exists()
+    assert kassa_app.load_config()["host"] == "10.1.2.3"
+    assert oct(target.stat().st_mode)[-3:] == "600"   # там пароли кассы
+
+
+def test_статус_без_адреса_кассы_объясняет_причину(tmp_path, monkeypatch):
+    monkeypatch.setattr(kassa_app, "DEMO", False)
+    monkeypatch.setattr(kassa_app, "CONFIG_PATH", tmp_path / "config.json")
+    kassa_app.STATUS_CACHE["value"] = None
+    kassa_app.STATUS_CACHE["at"] = 0.0
+    c = TestClient(kassa_app.app, base_url="http://127.0.0.1")
+    st = c.get("/api/status").json()
+    assert st["online"] is False
+    assert st["no_host"] is True
+
+
+def test_выключение_останавливает_сервер(client, monkeypatch):
+    stopped = []
+    monkeypatch.setattr(kassa_app, "terminate", lambda: stopped.append(True))
+    r = client.post("/api/quit")
+    assert r.status_code == 200
+    time.sleep(0.6)                      # гасим с задержкой, чтобы ответ дошёл
+    assert stopped == [True]
+
+
+def test_выключение_не_обрывает_обмен_с_кассой(client):
+    """Пока идёт печать, сервер гасить нельзя: чек останется открытым."""
+    assert kassa_app.KKT_LOCK.acquire(blocking=False)
+    try:
+        r = client.post("/api/quit")
+        assert r.status_code == 409
+        assert "занята" in r.json()["detail"]
+    finally:
+        kassa_app.KKT_LOCK.release()
+
+
+def test_остановка_не_трогает_чужой_сервис(capsys):
+    """--stop гасит только нашу кассу, опознав её по /api/ping."""
+    free = kassa_app.free_port(9700)
+    assert kassa_app.stop_instance(free) == 0
+    assert "никто не слушает" in capsys.readouterr().out

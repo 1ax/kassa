@@ -30,8 +30,11 @@ import shtrih
 BASE = Path(__file__).parent
 CONFIG_PATH = BASE / "config.json"
 
+# Заготовка на случай, если config.json ещё нет и создать его не удалось.
+# Адрес конкретной кассы живёт в config.json, а не здесь: держать его в коде —
+# значит хранить настройку установки в репозитории.
 DEFAULT_CONFIG = {
-    "host": "192.168.88.107",
+    "host": "",
     "port": 7778,
     "operator_password": 30,
     "admin_password": 30,
@@ -60,6 +63,24 @@ DEMO = False
 
 
 # --- Конфигурация --------------------------------------------------------
+
+def ensure_config() -> Path:
+    """
+    Создать config.json при первом запуске, чтобы настройки сразу лежали
+    в файле, а не в коде. За образец берём config.example.json.
+    """
+    if CONFIG_PATH.exists():
+        return CONFIG_PATH
+    sample = BASE / "config.example.json"
+    cfg = dict(DEFAULT_CONFIG)
+    if sample.exists():
+        try:
+            cfg.update(json.loads(sample.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError):
+            pass
+    save_config(cfg)
+    return CONFIG_PATH
+
 
 def load_config() -> dict:
     cfg = dict(DEFAULT_CONFIG)
@@ -195,6 +216,18 @@ def _fail(exc: Exception) -> HTTPException:
     return HTTPException(500, str(exc))
 
 
+@app.get("/api/ping")
+def ping():
+    """
+    Опознание запущенного экземпляра.
+
+    Лаунчер стучится сюда перед стартом: если на порту уже наша касса —
+    просто открыть браузер, если чужой сервис — сказать об этом, а не
+    молча уехать на другой порт и сломать закладку.
+    """
+    return {"app": "kassa", "pid": os.getpid(), "demo": DEMO}
+
+
 @app.get("/api/config")
 def get_config():
     cfg = load_config()
@@ -204,6 +237,8 @@ def get_config():
 
 @app.post("/api/config")
 def set_config(req: ConfigRequest):
+    if not req.host.strip():
+        raise HTTPException(400, "Адрес кассы не может быть пустым")
     if req.tax_system not in shtrih.TAX_SYSTEMS:
         raise HTTPException(400, f"Неизвестная система налогообложения: {req.tax_system}")
     if not 1 <= req.port <= 65535:
@@ -224,6 +259,10 @@ def status():
       * свежий ответ держим пару секунд, чтобы не долбить кассу пятью
         командами на каждый тик.
     """
+    if not DEMO and not load_config()["host"].strip():
+        return {"online": False, "demo": False, "no_host": True,
+                "error": "Адрес кассы не задан"}
+
     now = time.monotonic()
     cached = STATUS_CACHE["value"]
     if cached is not None and now - STATUS_CACHE["at"] < STATUS_TTL:
@@ -277,6 +316,34 @@ def device():
         return with_kkt(lambda k: k.device_type(), wait=5)
     except Exception as exc:
         raise _fail(exc)
+
+
+def terminate() -> None:
+    """Вынесено отдельно, чтобы тест мог подменить и не погасить сам себя."""
+    import signal
+
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+@app.post("/api/quit")
+def quit_server():
+    """
+    Погасить сервер по кнопке в интерфейсе.
+
+    Запускается через иконку, а не из терминала, поэтому гасить его иначе
+    было бы нечем. Пока идёт обмен с кассой — отказываемся: обрывать
+    открытый чек на полпути нельзя.
+    """
+    if not KKT_LOCK.acquire(blocking=False):
+        raise HTTPException(409, "Касса занята операцией, подождите её окончания")
+    KKT_LOCK.release()
+
+    def shutdown():
+        time.sleep(0.3)          # даём ответу дойти до браузера
+        terminate()
+
+    threading.Thread(target=shutdown, daemon=True).start()
+    return {"ok": True, "message": "Сервер остановлен"}
 
 
 @app.get("/api/log")
@@ -426,6 +493,56 @@ def index():
 
 # --- Запуск --------------------------------------------------------------
 
+def running_instance(port: int, timeout: float = 0.6) -> dict | None:
+    """
+    Кто занял порт: наша касса, кто-то чужой или никто.
+
+    Возвращает ответ /api/ping, если это наш сервер; {} — если порт занят
+    чем-то посторонним; None — если порт свободен.
+    """
+    with socket.socket() as probe:
+        probe.settimeout(timeout)
+        if probe.connect_ex(("127.0.0.1", port)) != 0:
+            return None
+    try:
+        import urllib.request
+        # Мимо прокси: если в окружении стоит HTTP_PROXY, urllib потащит
+        # через него даже запрос на 127.0.0.1 — и свой же сервер опознать
+        # не сможет. Ровно на этом --stop однажды объявил кассу «чужим сервисом».
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(
+            f"http://127.0.0.1:{port}/api/ping", timeout=timeout
+        ) as r:
+            data = json.loads(r.read())
+        return data if data.get("app") == "kassa" else {}
+    except Exception:
+        return {}
+
+
+def stop_instance(port: int) -> int:
+    """Погасить запущенную кассу. Возвращает код возврата для оболочки."""
+    import signal
+
+    running = running_instance(port)
+    if running is None:
+        print(f"На порту {port} никто не слушает — гасить нечего.")
+        return 0
+    if not running:
+        print(f"Порт {port} занят посторонним сервисом, не трогаю его.")
+        return 1
+    pid = running["pid"]
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        print("Процесс уже завершился.")
+        return 0
+    except PermissionError:
+        print(f"Нет прав погасить процесс {pid}.")
+        return 1
+    print(f"Касса остановлена (процесс {pid}).")
+    return 0
+
+
 def free_port(preferred: int, tries: int = 20) -> int:
     """Первый свободный порт, начиная с предпочтительного."""
     for candidate in range(preferred, preferred + tries):
@@ -455,9 +572,34 @@ def main() -> None:
                     help="работать на эмуляторе кассы, ничего не печатать")
     ap.add_argument("--open", action="store_true",
                     help="открыть интерфейс в браузере сразу после старта")
+    ap.add_argument("--stop", action="store_true",
+                    help="погасить уже запущенную кассу и выйти")
     args = ap.parse_args()
 
+    if args.stop:
+        raise SystemExit(stop_instance(args.port))
+
     DEMO = args.demo
+    ensure_config()
+
+    # На фиксированном порту может уже сидеть наш же сервер — тогда второй
+    # поднимать незачем: закладка и иконка ведут на тот же адрес.
+    running = running_instance(args.port)
+    if running:
+        url = f"http://127.0.0.1:{args.port}"
+        print(f"Касса уже запущена: {url}", flush=True)
+        if args.open:
+            import webbrowser
+            webbrowser.open(url)
+        return
+    if running == {}:
+        if args.strict_port:
+            raise SystemExit(
+                f"Порт {args.port} занят посторонним сервисом. "
+                f"Освободите его или укажите другой: --port НОМЕР"
+            )
+        print(f"Порт {args.port} занят посторонним сервисом, ищу свободный.")
+
     port = args.port if args.strict_port else free_port(args.port)
 
     url = f"http://127.0.0.1:{port}"
