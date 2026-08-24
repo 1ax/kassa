@@ -954,12 +954,24 @@ const SVC_FIELDS = ['svc-expiry', 'svc-version', 'svc-fisc-at', 'svc-reg',
                      'svc-sno', 'svc-fisc-fd', 'svc-unconfirmed'];
 
 async function loadService() {
+  const fail = (text) => {
+    SVC_FIELDS.forEach(id => { $(id).textContent = '—'; $(id).className = ''; });
+    $('svc-error').textContent = text;
+    $('svc-error').style.display = '';
+  };
   try {
-    const s = await (await fetch('/api/service')).json();
+    const r = await fetch('/api/service');
+    // Страница отдаётся с диска, а сервер живёт в памяти: после обновления
+    // кода интерфейс бывает новее запущенного сервера. Это не «нет связи
+    // с кассой» — касса как раз на месте, перезапустить нужно кассу-программу.
+    if (r.status === 404) {
+      fail('Запущенный сервер старее интерфейса: выключите и запустите кассу заново');
+      return;
+    }
+    if (!r.ok) { fail(`Сервер ответил ошибкой ${r.status}`); return; }
+    const s = await r.json();
     if (!s.online) {
-      SVC_FIELDS.forEach(id => { $(id).textContent = '—'; $(id).className = ''; });
-      $('svc-error').textContent = s.error || 'Нет связи с кассой';
-      $('svc-error').style.display = '';
+      fail(s.error || 'Нет связи с кассой');
       return;
     }
     $('svc-error').style.display = 'none';
@@ -978,9 +990,7 @@ async function loadService() {
     $('svc-unconfirmed').textContent = s.unconfirmed;
     $('svc-unconfirmed').className = s.unconfirmed_warning ? 'warn' : '';
   } catch (e) {
-    SVC_FIELDS.forEach(id => { $(id).textContent = '—'; $(id).className = ''; });
-    $('svc-error').textContent = 'Панель обслуживания недоступна';
-    $('svc-error').style.display = '';
+    fail('Панель обслуживания недоступна');
   }
 }
 
