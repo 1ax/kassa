@@ -312,6 +312,60 @@ def test_разбор_параметров_смены_живой_кассы():
     assert st == {"shift_open": False, "shift_number": 6, "receipt_number": 0}
 
 
+# --- Панель обслуживания: срок действия, версия ФН, фискализация, ОФД ----
+
+def test_разбор_срока_действия_фн_живой_кассы():
+    # Спецификация обещает 3 байта, живая касса вернула 5 — два лишних байта
+    # не расшифрованы, возвращаются сырьём.
+    payload = bytes.fromhex("ff0300" + "1c040e4701")
+    k = kkt_with([payload])
+    st = k.fn_expiry()
+    assert st["expiry"] == "14.04.2028"
+    assert st["tail"] == "47 01"
+
+
+def test_срок_действия_фн_из_трёх_байт_не_ломает_разбор():
+    # Ровно то, что обещает спецификация: без хвоста.
+    payload = bytes.fromhex("ff0300" + "1c040e")
+    k = kkt_with([payload])
+    st = k.fn_expiry()
+    assert st["expiry"] == "14.04.2028"
+    assert st["tail"] == ""
+
+
+def test_разбор_версии_фн_живой_кассы():
+    payload = bytes.fromhex("ff0400" + "666e5f765f315f325f3220202020200001")
+    k = kkt_with([payload])
+    st = k.fn_version()
+    assert st["version"] == "fn_v_1_2_2"
+    assert st["serial_software"] is True
+
+
+def test_разбор_итогов_фискализации_живой_кассы():
+    payload = bytes.fromhex(
+        "ff0900"
+        "19031f0c25"
+        "343633323433363233323830"
+        "3030303839333632393330303839363820202020"
+        "020000010000003bf21e4a"
+    )
+    k = kkt_with([payload])
+    st = k.fiscalization()
+    assert st["at"] == "31.03.2025 12:37"
+    assert st["inn"] == "463243623280"
+    assert st["reg_number"] == "0008936293008968"
+    assert st["tax_systems"] == ["УСН доход"]
+    assert st["work_modes"] == 0
+    assert st["fd"] == 1
+    assert st["fp"] == 1243542075
+
+
+def test_разбор_количества_неподтверждённых_фд_живой_кассы():
+    payload = bytes.fromhex("ff3f00" + "0000")
+    k = kkt_with([payload])
+    assert k.unconfirmed_documents() == 0
+
+
 # --- Ошибки кассы --------------------------------------------------------
 
 def test_ненулевой_код_ошибки_превращается_в_исключение():

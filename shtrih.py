@@ -54,9 +54,13 @@ CMD_DEVICE_TYPE = b"\xfc"        # Получить тип устройства
 
 CMD_FN_STATUS = b"\xff\x01"      # Запрос статуса ФН
 CMD_FN_NUMBER = b"\xff\x02"      # Запрос номера ФН
+CMD_FN_EXPIRY = b"\xff\x03"      # Запрос срока действия ФН
+CMD_FN_VERSION = b"\xff\x04"     # Запрос версии ФН
+CMD_FISCALIZATION = b"\xff\x09"  # Запрос итогов последней фискализации
 CMD_SEND_TLV = b"\xff\x0c"       # Передать произвольную TLV структуру
 CMD_CORRECTION_BEGIN = b"\xff\x35"   # Начать формирование чека коррекции
 CMD_OFD_STATUS = b"\xff\x39"     # Статус информационного обмена с ОФД
+CMD_UNCONFIRMED = b"\xff\x3f"    # Запрос количества ФД без квитанции ОФД
 CMD_SHIFT_PARAMS = b"\xff\x40"   # Запрос параметров текущей смены
 CMD_CLOSE_RECEIPT_V2 = b"\xff\x45"   # Закрытие чека расширенное, вариант 2
 CMD_OPERATION_V2 = b"\xff\x46"       # Операция V2 (позиция чека)
@@ -90,6 +94,17 @@ TAX_SYSTEMS = {
     "envd": 0x08,         # ЕНВД
     "esn": 0x10,          # ЕСП
     "psn": 0x20,          # ПСН
+}
+
+# Человеко-читаемые названия систем налогообложения. Коды берутся из
+# TAX_SYSTEMS, здесь только подписи для интерфейса — не дублировать биты.
+TAX_SYSTEM_NAMES = {
+    "osn": "ОСН",
+    "usn_income": "УСН доход",
+    "usn_profit": "УСН доход минус расход",
+    "envd": "ЕНВД",
+    "esn": "ЕСП",
+    "psn": "ПСН",
 }
 
 # Тип операции (FF46, FF4A)
@@ -577,6 +592,79 @@ class KKT:
             "queue_length": int.from_bytes(d[2:4], "little"),
             "first_document": int.from_bytes(d[4:8], "little"),
         }
+
+    def fn_expiry(self) -> dict:
+        """
+        Команда FF03h. Срок действия ФН.
+
+        Спецификация v.1.18 обещает 3 байта данных (ГГ ММ ДД), прошивка
+        C1/62922 на живой кассе вернула 5 — два лишних байта после даты
+        спецификацией не описаны, их назначение не установлено, разбор
+        отдаёт их сырьём и не зависит от того, 3 байта пришло или 5.
+        """
+        r = self.execute(CMD_FN_EXPIRY, password(self.admin_password))
+        d = r.data
+        expiry = f"{d[2]:02d}.{d[1]:02d}.{2000 + d[0]}"
+        return {
+            "expiry": expiry,
+            "tail": d[3:].hex(" ").upper(),
+        }
+
+    def fn_version(self) -> dict:
+        """
+        Команда FF04h. Версия ПО ФН.
+
+        Раскладка ответа (проверена на живой ККТ):
+            0-15   версия ПО ФН, ASCII, дополнена пробелами и нулём
+            16     тип ПО: 0 — отладочная, 1 — серийная
+        """
+        r = self.execute(CMD_FN_VERSION, password(self.admin_password))
+        d = r.data
+        return {
+            "version": d[0:16].decode("ascii", errors="replace").strip(" \x00"),
+            "serial_software": d[16] == 1,
+        }
+
+    def fiscalization(self) -> dict:
+        """
+        Команда FF09h. Итоги последней фискализации (перерегистрации).
+
+        Спецификация обещает 47 байт данных для ФФД 1.05, прошивка C1/62922
+        на живой кассе вернула 48. Раскладка сверена по четырём независимым
+        признакам (ИНН совпал с ответом 11h, РН ККТ — 16 цифр, код СНО
+        совпал с настройкой tax_system, номер ФД = 1, как и положено отчёту
+        о регистрации):
+            0-4    дата и время фискализации: ГГ ММ ДД ЧЧ ММ
+            5-16   ИНН, 12 байт ASCII
+            17-36  регистрационный номер ККТ, 20 байт ASCII
+            37     код системы налогообложения, битовое поле
+            38     режим работы, битовое поле
+            39     расширенные признаки работы ККТ (лишний байт
+                   относительно спецификации, не разбирается)
+            40-43  номер ФД, uint32 LE
+            44-47  фискальный признак, uint32 LE
+        """
+        r = self.execute(CMD_FISCALIZATION, password(self.admin_password))
+        d = r.data
+        y, mo, dd, hh, mi = d[0:5]
+        tax_bits = d[37]
+        tax_systems = [
+            name for key, name in TAX_SYSTEM_NAMES.items() if tax_bits & TAX_SYSTEMS[key]
+        ]
+        return {
+            "at": f"{dd:02d}.{mo:02d}.{2000 + y} {hh:02d}:{mi:02d}",
+            "inn": d[5:17].decode("ascii", errors="replace").strip(),
+            "reg_number": d[17:37].decode("ascii", errors="replace").strip(),
+            "tax_systems": tax_systems,
+            "work_modes": d[38],
+            "fd": int.from_bytes(d[40:44], "little"),
+            "fp": int.from_bytes(d[44:48], "little"),
+        }
+
+    def unconfirmed_documents(self) -> int:
+        """Команда FF3Fh. Количество ФД, на которые нет квитанции ОФД."""
+        r = self.execute(CMD_UNCONFIRMED, password(self.admin_password))
+        return int.from_bytes(r.data[0:2], "little")
 
     def device_type(self) -> dict:
         """

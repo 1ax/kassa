@@ -272,6 +272,29 @@ def test_выключение_не_обрывает_обмен_с_кассой(c
         kassa_app.KKT_LOCK.release()
 
 
+def test_панель_обслуживания_работает_на_эмуляторе(client):
+    r = client.get("/api/service")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["online"] is True
+    assert body["fn_expiry_warning"] is False
+    assert body["unconfirmed_warning"] is False
+
+
+def test_days_left_обычный_случай():
+    from datetime import date
+    assert kassa_app.days_left("20.08.2026", today=date(2026, 8, 10)) == 10
+
+
+def test_days_left_срок_в_прошлом_отрицательное_число():
+    from datetime import date
+    assert kassa_app.days_left("01.01.2020", today=date(2026, 8, 24)) < 0
+
+
+def test_days_left_неразбираемая_строка_даёт_none():
+    assert kassa_app.days_left("не дата") is None
+
+
 def test_остановка_не_трогает_чужой_сервис(capsys):
     """--stop гасит только нашу кассу, опознав её по /api/ping."""
     free = kassa_app.free_port(9700)

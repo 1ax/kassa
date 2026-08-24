@@ -473,6 +473,25 @@
     </details>
 
     <details>
+      <summary>Обслуживание</summary>
+      <p style="font-size:11px;color:var(--dim);line-height:1.5;margin:8px 0">
+        Служебные данные ФН: срок действия, версия, итоги фискализации,
+        очередь документов без квитанции ОФД. Читающие команды, ничего не печатают.
+      </p>
+      <dl style="margin:12px 0 0">
+        <div class="gauge"><dt>Срок действия ФН</dt><dd id="svc-expiry">—</dd></div>
+        <div class="gauge"><dt>Версия ПО ФН</dt><dd id="svc-version">—</dd></div>
+        <div class="gauge"><dt>Дата фискализации</dt><dd id="svc-fisc-at">—</dd></div>
+        <div class="gauge"><dt>РН ККТ</dt><dd id="svc-reg" style="font-size:12px">—</dd></div>
+        <div class="gauge"><dt>Система налогообложения</dt><dd id="svc-sno" style="font-size:13px">—</dd></div>
+        <div class="gauge"><dt>Регистрация: № ФД / признак</dt><dd id="svc-fisc-fd" style="font-size:12px">—</dd></div>
+        <div class="gauge"><dt>ФД без квитанции ОФД</dt><dd id="svc-unconfirmed">—</dd></div>
+      </dl>
+      <div id="svc-error" class="msg err" style="display:none;margin-top:12px"></div>
+      <button class="minor" onclick="loadService()">Обновить</button>
+    </details>
+
+    <details>
       <summary>Журнал обмена с кассой</summary>
       <p style="font-size:11px;color:var(--dim);margin:8px 0">
         Кадры последней операции. Пригодится, если касса ответит непонятной ошибкой.
@@ -926,6 +945,45 @@ async function loadLog() {
   } catch (e) { $('wire').textContent = 'журнал недоступен'; }
 }
 
+// --- панель обслуживания ---
+// Четыре команды ФН на каждый тик статуса не нужны, поэтому запрашивается
+// один раз при загрузке страницы и по кнопке «Обновить», без привязки к
+// таймеру приборной панели.
+
+const SVC_FIELDS = ['svc-expiry', 'svc-version', 'svc-fisc-at', 'svc-reg',
+                     'svc-sno', 'svc-fisc-fd', 'svc-unconfirmed'];
+
+async function loadService() {
+  try {
+    const s = await (await fetch('/api/service')).json();
+    if (!s.online) {
+      SVC_FIELDS.forEach(id => { $(id).textContent = '—'; $(id).className = ''; });
+      $('svc-error').textContent = s.error || 'Нет связи с кассой';
+      $('svc-error').style.display = '';
+      return;
+    }
+    $('svc-error').style.display = 'none';
+    const days = s.fn_expiry_days;
+    $('svc-expiry').textContent = (days === null || days === undefined)
+      ? s.fn_expiry
+      : `${s.fn_expiry} (осталось дней: ${days})`;
+    $('svc-expiry').className = s.fn_expiry_warning ? 'warn' : '';
+    $('svc-version').textContent = s.fn_version +
+      (s.fn_serial_software ? '' : ' (отладочная сборка)');
+    const f = s.fiscalization || {};
+    $('svc-fisc-at').textContent = f.at || '—';
+    $('svc-reg').textContent = f.reg_number || '—';
+    $('svc-sno').textContent = (f.tax_systems || []).join(', ') || '—';
+    $('svc-fisc-fd').textContent = (f.fd != null) ? `№ ${f.fd} / ${f.fp}` : '—';
+    $('svc-unconfirmed').textContent = s.unconfirmed;
+    $('svc-unconfirmed').className = s.unconfirmed_warning ? 'warn' : '';
+  } catch (e) {
+    SVC_FIELDS.forEach(id => { $(id).textContent = '—'; $(id).className = ''; });
+    $('svc-error').textContent = 'Панель обслуживания недоступна';
+    $('svc-error').style.display = '';
+  }
+}
+
 async function loadCfg() {
   const c = await (await fetch('/api/config')).json();
   $('s-host').value = c.host;
@@ -958,6 +1016,7 @@ refreshFpdButton();
 loadCfg();
 loadDevice().then(status);
 loadLog();
+loadService();
 draw();
 
 // Каждый опрос — пять команд по TCP к кассе. На скрытой вкладке это бессмысленно

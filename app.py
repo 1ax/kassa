@@ -18,7 +18,7 @@ import os
 import socket
 import threading
 import time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -55,6 +55,11 @@ KKT_LOCK = threading.Lock()
 # за печатью чека и не подвешивал интерфейс на минуту.
 STATUS_CACHE: dict = {"at": 0.0, "value": None}
 STATUS_TTL = 2.0
+
+# Панель обслуживания опрашивается вручную (загрузка страницы + кнопка), а не
+# по таймеру, поэтому кэш можно держать дольше, чем у приборной панели.
+SERVICE_CACHE: dict = {"at": 0.0, "value": None}
+SERVICE_TTL = 60.0
 
 # Журнал последнего обмена с кассой — для разбора полётов в альфе.
 LAST_EXCHANGE: list[str] = []
@@ -308,6 +313,76 @@ def status():
 
     STATUS_CACHE["value"] = value
     STATUS_CACHE["at"] = time.monotonic()
+    return value
+
+
+def days_left(expiry: str, today: date | None = None) -> int | None:
+    """
+    Сколько дней осталось до истечения срока действия ФН.
+
+    `expiry` — строка «ДД.ММ.ГГГГ», как её возвращает shtrih.fn_expiry().
+    Неразбираемая строка — не повод падать: возвращаем None, предупреждение
+    в этом случае не поднимается.
+    """
+    try:
+        d = datetime.strptime(expiry, "%d.%m.%Y").date()
+    except (ValueError, TypeError):
+        return None
+    return (d - (today or date.today())).days
+
+
+@app.get("/api/service")
+def service():
+    """
+    Панель обслуживания: срок действия ФН, версия его ПО, итоги последней
+    фискализации, число ФД без квитанции ОФД.
+
+    Запрашивается интерфейсом один раз при загрузке и по кнопке «Обновить»,
+    не по таймеру — поэтому кэш держим дольше, чем у /api/status, а не
+    гоняем эти команды на каждый тик приборной панели.
+    """
+    if not DEMO and not load_config()["host"].strip():
+        return {"online": False, "demo": False, "no_host": True,
+                "error": "Адрес кассы не задан"}
+
+    now = time.monotonic()
+    cached = SERVICE_CACHE["value"]
+    if cached is not None and now - SERVICE_CACHE["at"] < SERVICE_TTL:
+        return cached
+
+    def read(k):
+        expiry = k.fn_expiry()
+        version = k.fn_version()
+        fiscal = k.fiscalization()
+        unconfirmed = k.unconfirmed_documents()
+        days = days_left(expiry["expiry"])
+        return {
+            "online": True,
+            "demo": DEMO,
+            "fn_expiry": expiry["expiry"],
+            "fn_expiry_days": days,
+            "fn_expiry_warning": days is not None and days < 30,
+            "fn_version": version["version"],
+            "fn_serial_software": version["serial_software"],
+            "fiscalization": fiscal,
+            "unconfirmed": unconfirmed,
+            "unconfirmed_warning": unconfirmed > 0,
+        }
+
+    try:
+        value = with_kkt(read, wait=0, record=False)
+    except Busy:
+        if cached is not None:
+            return {**cached, "busy": True}
+        return {"online": False, "busy": True, "demo": DEMO,
+                "error": "Касса занята другой операцией"}
+    except (OSError, socket.timeout, shtrih.ProtocolError) as exc:
+        value = {"online": False, "demo": DEMO, "error": str(exc)}
+    except Exception as exc:
+        raise _fail(exc)
+
+    SERVICE_CACHE["value"] = value
+    SERVICE_CACHE["at"] = time.monotonic()
     return value
 
 

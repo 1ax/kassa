@@ -100,6 +100,27 @@ class DemoKKT:
         return {"connected": True, "has_message": False, "waiting_receipt": False,
                 "queue_length": 0, "first_document": 0}
 
+    def fn_expiry(self) -> dict:
+        year = date.today().year + 2
+        return {"expiry": f"01.01.{year}", "tail": "00 00"}
+
+    def fn_version(self) -> dict:
+        return {"version": "demo_v_0_0_0", "serial_software": False}
+
+    def fiscalization(self) -> dict:
+        return {
+            "at": "01.01.2000 00:00",
+            "inn": "000000000000",
+            "reg_number": "0000000000000000",
+            "tax_systems": [shtrih.TAX_SYSTEM_NAMES["usn_income"]],
+            "work_modes": 0,
+            "fd": 1,
+            "fp": 111111111,
+        }
+
+    def unconfirmed_documents(self) -> int:
+        return 0
+
     # -- смена --
 
     def open_shift(self):
