@@ -155,6 +155,7 @@ class ReceiptRequest(BaseModel):
     electronic: float = Field(default=0, ge=0)
     tax_system: str = "usn_income"
     text: str = ""
+    corrected_fpd: str = ""
 
 
 class CorrectionRequest(BaseModel):
@@ -392,6 +393,9 @@ def punch_receipt(req: ReceiptRequest):
     for p in req.positions:
         if p.vat not in shtrih.VAT_RATES:
             raise HTTPException(400, f"Неизвестная ставка НДС: {p.vat}")
+    corrected_fpd = req.corrected_fpd.strip()
+    if corrected_fpd and not corrected_fpd.isdigit():
+        raise HTTPException(400, "ФПД исправляемого чека состоит только из цифр")
 
     total = round(sum(p.qty * p.price for p in req.positions), 2)
     if total <= 0:
@@ -416,6 +420,8 @@ def punch_receipt(req: ReceiptRequest):
     def run(k):
         k.open_receipt(doc_type)
         try:
+            if corrected_fpd:
+                k.send_tlv(shtrih.corrected_receipt_tlv(corrected_fpd))
             for p in req.positions:
                 k.operation(
                     op_type=req.op_type,

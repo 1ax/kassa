@@ -67,6 +67,32 @@ def test_позиция_без_наименования_не_уходит_в_к�
     assert "наименование" in r.json()["detail"]
 
 
+def test_нецифровой_фпд_не_уходит_в_кассу(client):
+    client.post("/api/shift/open")
+    r = client.post("/api/receipt", json={
+        "positions": [{"name": "Стоянка", "qty": 1, "price": 10}], "cash": 10,
+        "corrected_fpd": "20А7414"})
+    assert r.status_code == 400
+    assert "цифр" in r.json()["detail"]
+    assert demo.DemoKKT.state["receipt_open"] is False
+
+
+def test_чек_с_цифровым_фпд_пробивается(client):
+    """
+    Валидный corrected_fpd доходит до k.send_tlv() — в демо-режиме это
+    DemoKKT.send_tlv(). Без него запрос падал бы AttributeError'ом.
+    """
+    client.post("/api/shift/open")
+    r = client.post("/api/receipt", json={
+        "positions": [{"name": "Стоянка", "qty": 1, "price": 10}], "cash": 10,
+        "corrected_fpd": "2074148893"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["fd_number"]
+    assert demo.DemoKKT.state["receipt_open"] is False
+
+
 def test_недоплата_отбивается_до_открытия_чека(client):
     client.post("/api/shift/open")
     r = client.post("/api/receipt", json={

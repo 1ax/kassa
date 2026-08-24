@@ -342,6 +342,21 @@
         <button class="minor" onclick="payAll('card')">Всё электронными</button>
       </fieldset>
 
+      <fieldset>
+        <legend>Исправление ошибки</legend>
+        <div class="row">
+          <div>
+            <label for="fpd">ФПД исправляемого чека</label>
+            <input id="fpd" placeholder="Например: 2074148893" oninput="draw()">
+          </div>
+        </div>
+        <p style="font-size:11px;color:var(--dim)">
+          Заполняется, только когда этот чек исправляет ошибочный — и в возвратном
+          чеке, и в новом правильном. Для обычной продажи оставьте поле пустым.
+        </p>
+        <button class="minor" id="fpd-fill" onclick="fillFpd()">Подставить ФПД последнего чека</button>
+      </fieldset>
+
       <button class="go" onclick="confirmSale()">Пробить чек</button>
     </section>
 
@@ -599,6 +614,7 @@ function drawSale() {
   if (e) L.push(pad('  ЭЛЕКТРОННЫМИ', rub(e)));
   const change = c + e - total();
   if (change > 0.001) L.push(pad('  СДАЧА', rub(change)));
+  if ($('fpd').value.trim()) L.push('Доп. реквизит чека: ' + $('fpd').value.trim());
   L.push(line());
   L.push(snoName($('sno').value));
   return L.join('\n');
@@ -669,6 +685,7 @@ function setBusy(on, what) {
     .forEach(b => b.disabled = on);
   document.body.style.cursor = on ? 'progress' : '';
   if (on) say(what || 'Касса работает, идёт печать…', 'wait');
+  else refreshFpdButton();   // без ФПД в хранилище кнопка снова неактивна
 }
 
 async function guard(what, fn) {
@@ -697,12 +714,15 @@ async function _sendSale() {
         payment_subject: p.subject, payment_method: p.method
       })),
       cash: +$('cash').value, electronic: +$('card').value,
-      tax_system: $('sno').value
+      tax_system: $('sno').value,
+      corrected_fpd: $('fpd').value.trim()
     });
     say(`Чек пробит. ФД № ${r.fd_number}, фискальный признак ${r.fiscal_sign}` +
         (r.change > 0 ? `, сдача ${rub(r.change)} ₽` : ''), 'ok');
+    saveLastFpd(String(r.fiscal_sign));
+    refreshFpdButton();
     positions = []; addPos();
-    $('cash').value = 0; $('card').value = 0;
+    $('cash').value = 0; $('card').value = 0; $('fpd').value = '';
     draw(); status(); loadLog();
   } catch (e) { say(e.message, 'err'); }
 }
@@ -801,6 +821,32 @@ function clearJournal() {
   journal = [];
   try { localStorage.removeItem('kassa.journal'); } catch (e) {}
   renderJournal();
+}
+
+// --- ФПД последнего чека (для исправления ошибок) ---
+// Поле «fpd» на форме продажи по умолчанию всегда пустое — обычный чек не
+// должен нести ссылку на предыдущий, это дефектный фискальный документ.
+// Кнопка лишь подставляет сохранённое значение по явному нажатию.
+
+function loadLastFpd() {
+  try { return localStorage.getItem('kassa.lastFpd') || ''; } catch (e) { return ''; }
+}
+function saveLastFpd(v) {
+  try { localStorage.setItem('kassa.lastFpd', v); } catch (e) {}
+}
+function refreshFpdButton() {
+  const last = loadLastFpd();
+  const btn = $('fpd-fill');
+  btn.disabled = !last;
+  btn.textContent = last
+    ? `Подставить ФПД последнего чека (${last})`
+    : 'Подставить ФПД последнего чека';
+}
+function fillFpd() {
+  const last = loadLastFpd();
+  if (!last) return;
+  $('fpd').value = last;
+  draw();
 }
 
 // --- приборы ---
@@ -908,6 +954,7 @@ $('c-date').value = new Date().toISOString().slice(0, 10);
 addPos();
 loadJournal();
 renderJournal();
+refreshFpdButton();
 loadCfg();
 loadDevice().then(status);
 loadLog();

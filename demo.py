@@ -147,6 +147,9 @@ class DemoKKT:
         return {"change": 0.0, "fd_number": self.state["last_fd"],
                 "fiscal_sign": 1000000000 + self.state["last_fd"]}
 
+    def send_tlv(self, structure: bytes):
+        self._note(f"передан реквизит, {len(structure)} байт")
+
     def correction(self, *, total: float, reason_description: str = "",
                    reason_date: date | None = None, **kw) -> dict:
         if not self.state["shift_open"]:

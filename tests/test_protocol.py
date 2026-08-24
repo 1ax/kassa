@@ -227,6 +227,24 @@ def test_основание_коррекции_содержит_три_влож�
     assert tags == [1177, 1178, 1179]
 
 
+# --- Реквизит исправленного чека (тег 1192) -------------------------------
+
+def test_реквизит_исправленного_чека_кодируется_тегом_1192():
+    # Тег 1192 = 0x04A8 LE, длина значения 10 (цифр ФПД) LE, затем сами цифры
+    raw = shtrih.corrected_receipt_tlv("2074148893")
+    assert raw == bytes.fromhex("a8040a00") + b"2074148893"
+
+
+def test_send_tlv_шлёт_ff0c_с_паролем_сисадмина_и_структурой():
+    k = shtrih.KKT("stub", 0, operator_password=77, admin_password=88)
+    k._sock = FakeSocket([b"\xff\x0c\x00"])
+    structure = shtrih.corrected_receipt_tlv("2074148893")
+    k.send_tlv(structure)
+    frame = frames_sent(k)[0]
+    assert frame[2:4] == shtrih.CMD_SEND_TLV
+    assert frame[4:-1] == shtrih.password(88) + structure
+
+
 # --- Разбор эталонных ответов живой кассы --------------------------------
 
 def test_разбор_короткого_статуса_живой_кассы():

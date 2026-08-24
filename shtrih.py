@@ -224,6 +224,18 @@ def correction_reason_tlv(description: str, doc_date: date, doc_number: str) -> 
     return tlv(1174, inner)
 
 
+def corrected_receipt_tlv(fpd: str) -> bytes:
+    """
+    Тег 1192 «Дополнительный реквизит чека (БСО)» — ФПД исправляемого чека.
+
+    По методическим рекомендациям ФНС по исправлению ошибок при расчётах
+    кладётся и в обратный чек (возврат прихода), и в последующий исправленный
+    чек, чтобы налоговая видела связь документов. Обязательность самая
+    низкая («рекомендовано»), отсутствие тега нарушением не является.
+    """
+    return tlv(1192, fpd.encode("cp1251", errors="replace"))
+
+
 def build_frame(command: bytes, data: bytes = b"") -> bytes:
     """Собрать кадр целиком: STX | LEN | CMD | DATA | LRC."""
     body = command + data
@@ -683,6 +695,10 @@ class KKT:
             "fd_number": int.from_bytes(d[5:9], "little"),
             "fiscal_sign": int.from_bytes(d[9:13], "little"),
         }
+
+    def send_tlv(self, structure: bytes) -> Response:
+        """Команда FF0Ch «Передать произвольную TLV структуру»."""
+        return self.execute(CMD_SEND_TLV, password(self.admin_password) + structure)
 
     # -- чек коррекции --
 
