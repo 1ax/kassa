@@ -451,6 +451,12 @@ def punch_receipt(req: ReceiptRequest):
 
 @app.post("/api/correction")
 def punch_correction(req: CorrectionRequest):
+    if req.op_type not in (shtrih.OP_INCOME, shtrih.OP_EXPENSE):
+        raise HTTPException(
+            400,
+            "В ФФД 1.05 у чека коррекции допустимы только приход и расход. "
+            "Ошибочный чек исправляется чеком возврата прихода.",
+        )
     paid = round(req.cash + req.electronic, 2)
     if abs(paid - req.total) > 0.01:
         raise HTTPException(

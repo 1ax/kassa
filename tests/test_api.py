@@ -35,6 +35,13 @@ def test_страница_отдаётся(client):
     assert "Касса" in r.text
 
 
+def test_страница_содержит_журнал_событий(client):
+    """Грубая защита от случайного удаления панели журнала при будущих правках."""
+    r = client.get("/")
+    assert 'id="journal"' in r.text
+    assert "kassa.journal" in r.text
+
+
 def test_запрос_с_чужим_именем_хоста_отбивается(client):
     r = client.get("/api/config", headers={"Host": "attacker.example.com"})
     assert r.status_code == 403
@@ -125,6 +132,17 @@ def test_коррекция_с_несходящимися_суммами_не_у
         "total": 100, "cash": 50, "reason_description": "не пробит чек"})
     assert r.status_code == 400
     assert "не сходятся" in r.json()["detail"]
+
+
+def test_коррекция_с_возвратом_прихода_не_уходит(client):
+    """В ФФД 1.05 у чека коррекции допустимы только приход и расход."""
+    client.post("/api/shift/open")
+    r = client.post("/api/correction", json={
+        "op_type": 2, "total": 100, "cash": 100,
+        "reason_description": "не пробит чек за стоянку"})
+    assert r.status_code == 400
+    assert "приход и расход" in r.json()["detail"]
+    assert demo.DemoKKT.state["receipt_open"] is False
 
 
 def test_удачная_коррекция_возвращает_фискальный_признак(client):

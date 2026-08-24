@@ -366,10 +366,12 @@
             <label for="c-op">Признак расчёта</label>
             <select id="c-op" onchange="draw()">
               <option value="1">Приход</option>
-              <option value="2">Возврат прихода</option>
               <option value="3">Расход</option>
-              <option value="4">Возврат расхода</option>
             </select>
+            <p style="font-size:11px;color:var(--dim)">
+              В ФФД 1.05 у чека коррекции допустимы только приход и расход.
+              Ошибочный чек исправляется обычным чеком возврата прихода.
+            </p>
           </div>
         </div>
         <div class="row c2">
@@ -425,6 +427,19 @@
     </section>
 
     <div class="rule"></div>
+    <details>
+      <summary>Журнал событий</summary>
+      <p style="font-size:11px;color:var(--dim);margin:8px 0">
+        Успехи и ошибки операций. Плашка сверху гаснет через несколько секунд,
+        а номер ФД и фискальный признак нужны потом — здесь они не пропадают.
+      </p>
+      <div id="journal" style="font-family:var(--mono);font-size:10px;line-height:1.6;
+           color:var(--dim);background:var(--ground);border:1px solid var(--line);
+           border-radius:3px;padding:10px;max-height:220px;overflow:auto;
+           white-space:pre-wrap;word-break:break-word;margin:0"></div>
+      <button class="minor" onclick="clearJournal()">Очистить журнал</button>
+    </details>
+
     <details>
       <summary>Подключение</summary>
       <div class="row c2" style="margin-top:12px">
@@ -740,6 +755,52 @@ function closeShift() {
 function say(text, kind) {
   $('msg').innerHTML = `<div class="msg ${kind}">${esc(text)}</div>`;
   if (kind === 'ok') setTimeout(() => { $('msg').innerHTML = ''; }, 9000);
+  if (kind === 'ok' || kind === 'err') addJournal(text, kind);
+}
+
+// --- журнал событий ---
+// Плашка say() гаснет через 9 секунд — вместе с ней пропадал бы номер ФД
+// и фискальный признак только что пробитого чека, а ФПД нужен потом как
+// реквизит следующего документа. Журнал хранит это постоянно, в localStorage.
+
+let journal = [];
+
+function loadJournal() {
+  try {
+    const raw = localStorage.getItem('kassa.journal');
+    const parsed = raw ? JSON.parse(raw) : [];
+    journal = Array.isArray(parsed) ? parsed : [];
+  } catch (e) { journal = []; }
+}
+function saveJournal() {
+  try { localStorage.setItem('kassa.journal', JSON.stringify(journal)); } catch (e) {}
+}
+function stamp() {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function addJournal(text, kind) {
+  const top = journal[0];
+  if (top && top.text === text && top.kind === kind) {
+    top.time = stamp();
+    top.n = (top.n || 1) + 1;
+  } else {
+    journal.unshift({ time: stamp(), text, kind, n: 1 });
+  }
+  if (journal.length > 200) journal.length = 200;
+  saveJournal();
+  renderJournal();
+}
+function renderJournal() {
+  $('journal').innerHTML = journal.map(e => {
+    const rep = e.n > 1 ? ` (×${e.n})` : '';
+    return `<div style="color:${e.kind === 'err' ? 'var(--alarm)' : 'var(--ok)'}">${e.time} — ${esc(e.text)}${rep}</div>`;
+  }).join('') || 'событий ещё не было';
+}
+function clearJournal() {
+  journal = [];
+  try { localStorage.removeItem('kassa.journal'); } catch (e) {}
+  renderJournal();
 }
 
 // --- приборы ---
@@ -845,6 +906,8 @@ async function saveCfg() {
 
 $('c-date').value = new Date().toISOString().slice(0, 10);
 addPos();
+loadJournal();
+renderJournal();
 loadCfg();
 loadDevice().then(status);
 loadLog();
