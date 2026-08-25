@@ -81,6 +81,15 @@ SERVICE_TTL = 60.0
 FFD_CACHE: dict = {"at": 0.0, "value": None}
 FFD_TTL = 600.0
 
+# Версия ФФД для защёлки перед печатью — отдельно от FFD_CACHE (там весь
+# ответ панели «Переход на ФФД 1.2»): защёлке нужна только строка версии,
+# и не хочется тащить с ней весь снимок панели. TTL тот же: версия меняется
+# лишь перерегистрацией кассы.
+# «at»: None — кэш пуст. Именно None, а не 0.0: time.monotonic() считает
+# от загрузки машины, и вскоре после перезагрузки нулевая отметка выглядела
+# бы свежей — защёлка десять минут пропускала бы печать без проверки.
+FFD_STATE: dict = {"at": None, "value": None}
+
 # Версии ФФД, под которые в программе есть готовая ветка печати чеков.
 # Ветка 1.05 остаётся навсегда: ветка 1.2 добавится рядом с ней, а не вместо.
 CODE_FFD = ("1.05",)
@@ -455,6 +464,12 @@ async def local_only(request: Request, call_next):
 
 
 def _fail(exc: Exception) -> HTTPException:
+    if isinstance(exc, HTTPException):
+        # Уже готовая ошибка HTTP (например, отказ защёлки версии ФФД,
+        # поднятый внутри with_kkt) — отдаём как есть. Иначе она проваливается
+        # в ветку except Exception ниже и превращается в 500 с текстом вида
+        # «409: …» вместо собственного статуса и сообщения.
+        return exc
     if isinstance(exc, Busy):
         return HTTPException(409, "Касса занята другой операцией, подождите")
     if isinstance(exc, shtrih.KKTError):
@@ -589,6 +604,53 @@ def _ffd_by_length(data_length: int) -> str | None:
     return None
 
 
+def _ffd_current(k) -> str | None:
+    """
+    Версия ФФД, по которой касса работает сейчас, — по уже открытому
+    соединению `k`. Свежее значение отдаём из FFD_STATE, не долбя кассу
+    на каждый чек.
+
+    Основной путь — тег 1209 отчёта о регистрации, тот же источник, что
+    у /api/ffd. Если касса эту команду не поддерживает (KKTError, на живой
+    кассе это 0x37 «команда не поддерживается») — резервный путь по длине
+    ответа FF09h (_ffd_by_length). Задача функции — понять, можно ли
+    печатать, а не диагностировать кассу: честная диагностика ошибок
+    остаётся в /api/ffd.
+    """
+    now = time.monotonic()
+    if FFD_STATE["at"] is not None and now - FFD_STATE["at"] < FFD_TTL:
+        return FFD_STATE["value"]
+    try:
+        raw = k.registration_param(shtrih.TAG_FFD_VERSION, k.last_registration_report())
+        code = int.from_bytes(raw, "little") if raw else None
+        version = shtrih.FFD_VERSIONS.get(code)
+    except shtrih.KKTError:
+        version = _ffd_by_length(k.fiscalization()["data_length"])
+    FFD_STATE["value"] = version
+    FFD_STATE["at"] = time.monotonic()
+    return version
+
+
+def _refuse_if_ffd_mismatch(k) -> None:
+    """
+    Не пускать печать чека на кассу, чья версия ФФД программе незнакома:
+    напечатанный документ неверного формата уйдёт в ОФД, и это не отменить.
+
+    Версия не определилась вовсе (None) — решение владельца: печатаем как
+    раньше, не блокируем. Версия совпала с CODE_FFD — тоже вперёд. Иначе —
+    отказ с объяснением и отсылкой к панели «Переход на ФФД 1.2».
+    """
+    version = _ffd_current(k)
+    if version is None or version in CODE_FFD:
+        return
+    raise HTTPException(
+        409,
+        f"Касса работает по ФФД {version}, программа умеет печатать только "
+        f"{', '.join(CODE_FFD)} — документ неверного формата в ОФД не отменить. "
+        "Подробности — в панели «Переход на ФФД 1.2».",
+    )
+
+
 def days_left(expiry: str, today: date | None = None) -> int | None:
     """
     Сколько дней осталось до истечения срока действия ФН.
@@ -629,6 +691,7 @@ def service():
         fiscal = k.fiscalization()
         unconfirmed = k.unconfirmed_documents()
         days = days_left(expiry["expiry"])
+        by_length = _ffd_by_length(fiscal["data_length"])
         return {
             "online": True,
             "demo": DEMO,
@@ -640,7 +703,11 @@ def service():
             "fiscalization": fiscal,
             "unconfirmed": unconfirmed,
             "unconfirmed_warning": unconfirmed > 0,
-            "ffd_by_length": _ffd_by_length(fiscal["data_length"]),
+            "ffd_by_length": by_length,
+            # Печать останавливает защёлка (_refuse_if_ffd_mismatch), это поле —
+            # только чтобы интерфейс показал плашку и заблокировал кнопки
+            # заранее, не дожидаясь отказа при попытке пробить чек.
+            "ffd_blocked": by_length is not None and by_length not in CODE_FFD,
         }
 
     try:
@@ -721,6 +788,15 @@ def ffd():
         kkt_max = shtrih.FFD_VERSIONS.get(versions["kkt"])
         fn_max = shtrih.FFD_VERSIONS.get(versions["fn"])
         by_length = _ffd_by_length(fiscal["data_length"])
+
+        # Панель открывает человек, а не защёлка перед печатью, но раз версия
+        # всё равно определилась (тегом 1209 или резервом по длине) — заодно
+        # кладём её в FFD_STATE, чтобы панель и защёлка не расходились.
+        ffd_now = current if not unsupported else by_length
+        if ffd_now is not None:
+            FFD_STATE["value"] = ffd_now
+            FFD_STATE["at"] = time.monotonic()
+
         mismatch = (
             current is not None and by_length is not None
             and current not in by_length.split("/")
@@ -1154,6 +1230,7 @@ def punch_receipt(req: ReceiptRequest):
         raise HTTPException(400, f"Неизвестный тип операции: {req.op_type}")
 
     def run(k):
+        _refuse_if_ffd_mismatch(k)
         k.open_receipt(doc_type)
         try:
             if corrected_fpd:
@@ -1215,9 +1292,9 @@ def punch_correction(req: CorrectionRequest):
     except ValueError:
         raise HTTPException(400, "Дата документа основания не разобрана")
 
-    STATUS_CACHE["at"] = 0.0
-    try:
-        result = with_kkt(lambda k: k.correction(
+    def run(k):
+        _refuse_if_ffd_mismatch(k)
+        return k.correction(
             correction_type=req.correction_type,
             op_type=req.op_type,
             total=req.total,
@@ -1227,7 +1304,11 @@ def punch_correction(req: CorrectionRequest):
             reason_description=req.reason_description,
             reason_date=reason_date,
             reason_number=req.reason_number,
-        ))
+        )
+
+    STATUS_CACHE["at"] = 0.0
+    try:
+        result = with_kkt(run)
         return {"ok": True, **result}
     except Exception as exc:
         raise _fail(exc)

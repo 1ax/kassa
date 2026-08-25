@@ -27,10 +27,20 @@ def client(tmp_path, monkeypatch):
     kassa_app._STALE_CACHE["value"] = False
     kassa_app.CLOCK_LOG_CACHE["last_at"] = None
     kassa_app.CLOCK_LOG_CACHE["initialized"] = False
+    # Кэши /api/service и /api/ffd, а с ними и FFD_STATE защёлки перед
+    # печатью — иначе переключение demo.DemoKKT.state["ffd"] в одном тесте
+    # упрётся в закэшированное значение TTL следующего теста.
+    kassa_app.SERVICE_CACHE["value"] = None
+    kassa_app.SERVICE_CACHE["at"] = 0.0
+    kassa_app.FFD_CACHE["value"] = None
+    kassa_app.FFD_CACHE["at"] = 0.0
+    kassa_app.FFD_STATE["value"] = None
+    kassa_app.FFD_STATE["at"] = None
     demo.DemoKKT.state.update(
         shift_open=False, shift_number=6, receipt_number=0,
         last_fd=24, receipt_open=False,
         clock_offset=-268.0, date_pending=None, last_document_at=None,
+        ffd=2,
     )
     # base_url важен: сервер принимает только локальное имя хоста,
     # а TestClient по умолчанию представляется как «testserver».
@@ -627,3 +637,61 @@ def test_панель_ффд_работает_на_эмуляторе(client):
 def test_панель_обслуживания_содержит_ффд_по_длине(client):
     body = client.get("/api/service").json()
     assert body["ffd_by_length"] == "1.05"
+
+
+# --- Защёлка на версию ФФД перед печатью -----------------------------------
+
+def test_ффд_1_05_печатает_чек_и_коррекцию_как_раньше(client):
+    """Baseline: при ffd = 2 (1.05) защёлка не мешает — программа умеет 1.05."""
+    client.post("/api/shift/open")
+    r = client.post("/api/receipt", json={
+        "positions": [{"name": "Стоянка", "qty": 1, "price": 10}], "cash": 10})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+    r = client.post("/api/correction", json={
+        "total": 100, "cash": 100, "reason_description": "не пробит чек"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+
+def test_ффд_1_2_отбивает_чек_и_коррекцию(client):
+    demo.DemoKKT.state["ffd"] = 4
+    client.post("/api/shift/open")
+
+    r = client.post("/api/receipt", json={
+        "positions": [{"name": "Стоянка", "qty": 1, "price": 10}], "cash": 10})
+    assert r.status_code == 409
+    assert "1.2" in r.json()["detail"]
+
+    r = client.post("/api/correction", json={
+        "total": 100, "cash": 100, "reason_description": "не пробит чек"})
+    assert r.status_code == 409
+    assert "1.2" in r.json()["detail"]
+
+
+def test_ффд_1_2_не_блокирует_смену_и_х_отчёт_и_аннулирование(client):
+    demo.DemoKKT.state["ffd"] = 4
+    assert client.post("/api/shift/open").status_code == 200
+    assert client.post("/api/report/x").status_code == 200
+    assert client.post("/api/receipt/cancel").status_code == 200
+    assert client.post("/api/shift/close").status_code == 200
+
+
+def test_неизвестная_ффд_не_блокирует_печать(client):
+    """Версию определить не удалось вовсе — печатаем как раньше (решение владельца)."""
+    demo.DemoKKT.state["ffd"] = None
+    client.post("/api/shift/open")
+    r = client.post("/api/receipt", json={
+        "positions": [{"name": "Стоянка", "qty": 1, "price": 10}], "cash": 10})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+
+def test_service_отдаёт_ffd_blocked(client):
+    assert client.get("/api/service").json()["ffd_blocked"] is False
+
+    kassa_app.SERVICE_CACHE["value"] = None
+    kassa_app.SERVICE_CACHE["at"] = 0.0
+    demo.DemoKKT.state["ffd"] = 4
+    assert client.get("/api/service").json()["ffd_blocked"] is True

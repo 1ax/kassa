@@ -289,6 +289,10 @@
   Запущен старый сервер, код на диске новее. Печать и сверка часов заблокированы до перезапуска.
   <button class="minor" onclick="restartServer()">Перезапустить кассу</button>
 </div>
+<div class="msg err" id="ffd-blocked" hidden style="margin:0;border-radius:0;text-align:center">
+  Касса работает по версии ФФД, которую программа печатать не умеет. Печать чеков остановлена;
+  закрыть смену и аннулировать чек по-прежнему можно.
+</div>
 <div class="shell">
 
   <!-- приборы -->
@@ -805,10 +809,21 @@ function confirmCorr() {
 // «Пробить» — это два фискальных чека, отменить которые уже нельзя.
 let busy = false;
 
+// Защёлка версии ФФД (/api/service -> ffd_blocked): касса работает по
+// версии, которую программа печатать не умеет. Кнопки «Пробить» держим
+// заблокированными независимо от busy — иначе setBusy(false) после любой
+// другой операции разблокировал бы их вопреки защёлке.
+let ffdBlocked = false;
+
+function refreshGoButtons() {
+  document.querySelectorAll('.go').forEach(b => { b.disabled = busy || ffdBlocked; });
+}
+
 function setBusy(on, what) {
   busy = on;
-  document.querySelectorAll('.go, .minor, .modes button, .add, .drop')
+  document.querySelectorAll('.minor, .modes button, .add, .drop')
     .forEach(b => b.disabled = on);
+  refreshGoButtons();
   document.body.style.cursor = on ? 'progress' : '';
   if (on) say(what || 'Касса работает, идёт печать…', 'wait');
   else refreshFpdButton();   // без ФПД в хранилище кнопка снова неактивна
@@ -1198,6 +1213,9 @@ async function loadService(retried = false) {
     $('svc-unconfirmed').textContent = s.unconfirmed;
     $('svc-unconfirmed').className = s.unconfirmed_warning ? 'warn' : '';
     updateFfdButton(s.ffd_by_length);
+    ffdBlocked = !!s.ffd_blocked;
+    $('ffd-blocked').hidden = !ffdBlocked;
+    refreshGoButtons();
   } catch (e) {
     fail('Панель обслуживания недоступна');
   }

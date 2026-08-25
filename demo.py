@@ -36,6 +36,11 @@ class DemoKKT:
         "date_pending": None,
         # Момент последнего ФД. None — выводим его из эмулируемых часов.
         "last_document_at": None,
+        # Версия ФФД (числовой код тега 1209): 2 — 1.05 (как есть у живой
+        # кассы на 25.08.2026), 4 — 1.2, None — версия не определяется
+        # (касса отвечает 0x37 «команда не поддерживается», как и на живой
+        # кассе для FF0Eh). Переключается тестами защёлки перед печатью.
+        "ffd": 2,
     }
 
     def __init__(self, *args, **kwargs):
@@ -130,6 +135,11 @@ class DemoKKT:
         return {"version": "demo_v_0_0_0", "serial_software": False}
 
     def fiscalization(self) -> dict:
+        # Длина ответа FF09h согласована с state["ffd"] — тот же признак,
+        # которым _ffd_by_length() в app.py прикидывает версию ФФД, когда
+        # тег 1209 не читается: 48 байт у 1.05, 64 у 1.1/1.2, а для режима
+        # «версия не определяется» — заведомо нестандартная длина 99.
+        length = {2: 48, 4: 64}.get(self.state["ffd"], 99)
         return {
             "at": "01.01.2000 00:00",
             "inn": "000000000000",
@@ -138,19 +148,29 @@ class DemoKKT:
             "work_modes": 0,
             "fd": 1,
             "fp": 111111111,
-            "data_length": 48,
+            "data_length": length,
         }
 
     def unconfirmed_documents(self) -> int:
         return 0
 
     def registration_param(self, tag: int, report: int = 1) -> bytes | None:
-        """Правдоподобная эмуляция FF0Eh: единственный отчёт №1 с тегами,
-        снятыми с живой кассы 25.08.2026; прочие отчёты — «нет данных»."""
+        """
+        Правдоподобная эмуляция FF0Eh: единственный отчёт №1, тег 1209
+        подчиняется state["ffd"] (тесты защёлки переключают им версию),
+        остальные теги — как сняты с живой кассы 25.08.2026.
+
+        state["ffd"] is None — «версия не определяется»: как и настоящая
+        касса, отвечаем KKTError 0x37 «команда не поддерживается», причём
+        для любого тега — на живой кассе FF0Eh целиком отказывает, а не
+        выборочно по тегам.
+        """
+        if self.state["ffd"] is None:
+            raise shtrih.KKTError(0x37, "Команда не поддерживается")
         if report != 1:
             return None
         values = {
-            shtrih.TAG_FFD_VERSION: 2,   # ФФД 1.05
+            shtrih.TAG_FFD_VERSION: self.state["ffd"],
             shtrih.TAG_FFD_KKT: 2,       # ККТ умеет максимум 1.05
             shtrih.TAG_FFD_FN: 4,        # ФН умеет 1.2
         }
@@ -162,7 +182,20 @@ class DemoKKT:
         return 1
 
     def ffd_versions(self) -> dict:
-        return {"report": 1, "current": 2, "kkt": 2, "fn": 4}
+        """Согласовано с registration_param(): читает те же теги через него,
+        поэтому state["ffd"] управляет обеими командами одинаково."""
+        report = self.last_registration_report()
+
+        def read(tag: int) -> int | None:
+            value = self.registration_param(tag, report)
+            return int.from_bytes(value, "little") if value else None
+
+        return {
+            "report": report,
+            "current": read(shtrih.TAG_FFD_VERSION),
+            "kkt": read(shtrih.TAG_FFD_KKT),
+            "fn": read(shtrih.TAG_FFD_FN),
+        }
 
     # -- время и дата --
 
