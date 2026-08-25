@@ -522,6 +522,7 @@ def status():
             "online": True,
             "demo": DEMO,
             "mode": short["mode_name"],
+            "mode_code": short["mode"],
             "receipt_open": short["receipt_open"],
             "paper": short["paper"],
             "flags": short["flags_hex"],

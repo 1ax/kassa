@@ -47,13 +47,15 @@
   .instruments {
     background: var(--panel);
     border-right: 1px solid var(--line);
-    padding: 20px 18px;
     overflow-y: auto;
+    display: flex; flex-direction: column; padding: 16px 18px;
   }
+  .instruments > * { flex: none; }
+  .instruments dl { margin: 0; }
 
   .brand {
     font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
-    color: var(--dim); margin-bottom: 22px;
+    color: var(--dim); margin-bottom: 14px;
     display: flex; align-items: center; gap: 8px;
   }
   .lamp {
@@ -64,7 +66,7 @@
   .lamp.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
   .lamp.off { background: var(--alarm); box-shadow: 0 0 8px var(--alarm); }
 
-  .gauge { margin-bottom: 16px; }
+  .gauge { margin-bottom: 10px; }
   .gauge dt {
     font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
     color: var(--dim); margin-bottom: 4px;
@@ -76,14 +78,29 @@
   }
   .gauge dd.warn { color: var(--brass); }
   .gauge dd.bad { color: var(--alarm); }
+  .gauge dd.sub {
+    font-family: var(--sans); font-size: 11px; color: var(--brass); margin-top: 3px;
+  }
 
-  .rule { height: 1px; background: var(--line); margin: 20px 0; }
+  .rule { height: 1px; background: var(--line); margin: 10px 0; }
+
+  .rail-group { display: grid; gap: 4px; }
+  .rail-group .minor { margin-right: 0; padding: 7px 12px; text-align: left; }
+  .rail-group button[aria-pressed="true"] {
+    border-color: var(--accent); color: var(--accent);
+  }
+
+  .plate {
+    margin-top: auto; padding-top: 12px; font-family: var(--mono);
+    font-size: 10px; line-height: 1.5; color: var(--dim);
+  }
 
   /* ---- рабочая область ---- */
 
   .work { padding: 20px 26px; overflow-y: auto; }
 
   .modes { display: flex; gap: 2px; margin-bottom: 24px; }
+  .modes[hidden] { display: none; }   /* hidden не спорит с display:flex сам */
   .modes button {
     flex: 1; padding: 11px 14px; cursor: pointer;
     background: var(--panel); color: var(--dim);
@@ -163,7 +180,7 @@
     font-family: var(--sans); font-size: 12px; margin-right: 6px;
   }
   .minor:hover { border-color: var(--accent); color: var(--accent); }
-  .minor.quit { color: var(--dim); }
+  .minor.quit { color: var(--dim); padding: 7px 12px; text-align: left; }
   .minor.quit:hover { border-color: var(--alarm); color: var(--alarm); }
 
   /* ---- лента ---- */
@@ -242,11 +259,20 @@
   dialog .yes { background: var(--accent); color: var(--ground); border-color: var(--accent); font-weight: 600; }
   dialog .no { background: none; color: var(--dim); }
 
-  details summary {
-    cursor: pointer; font-size: 11px; letter-spacing: .12em;
-    text-transform: uppercase; color: var(--dim); padding: 8px 0;
+  .panel h2 {
+    font-weight: 400; font-size: 10px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--dim); margin: 0 0 10px;
+    display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
   }
-  details summary:hover { color: var(--accent); }
+  /* Переключатель режимов при открытой панели убран, и закрыть её иначе
+     нечем: рассчитывать, что человек нажмёт подсвеченную кнопку слева
+     второй раз, нельзя — в большинстве интерфейсов это ничего не делает. */
+  .panel-close {
+    background: none; border: none; cursor: pointer; padding: 0;
+    color: var(--dim); font-family: var(--sans);
+    font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+  }
+  .panel-close:hover { color: var(--accent); }
 
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
@@ -268,23 +294,37 @@
   <aside class="instruments">
     <div class="brand"><span class="lamp" id="lamp"></span><span id="link">связь…</span></div>
     <dl>
-      <div class="gauge"><dt>Смена</dt><dd id="g-shift">—</dd></div>
+      <div class="gauge">
+        <dt>Смена</dt>
+        <dd id="g-shift">—</dd>
+        <dd id="g-mode" class="sub" hidden>—</dd>
+      </div>
       <div class="gauge"><dt>Чеков в смене</dt><dd id="g-receipt">—</dd></div>
-      <div class="gauge"><dt>Режим</dt><dd id="g-mode" style="font-size:12px">—</dd></div>
       <div class="rule"></div>
       <div class="gauge"><dt>Очередь в ОФД</dt><dd id="g-ofd">—</dd></div>
       <div class="gauge"><dt>Последний ФД</dt><dd id="g-fd">—</dd></div>
-      <div class="gauge"><dt>ФН</dt><dd id="g-fn" style="font-size:11px">—</dd></div>
       <div class="gauge"><dt>Часы кассы</dt><dd id="g-clock" style="font-size:12px">—</dd></div>
-      <div class="gauge"><dt>Аппарат</dt><dd id="g-device" style="font-size:11px">—</dd></div>
     </dl>
     <div class="rule"></div>
-    <button class="minor" onclick="act('/api/shift/open','Смена открыта')">Открыть смену</button>
-    <button class="minor" onclick="act('/api/report/x','X-отчёт напечатан')">X-отчёт</button>
-    <button class="minor" onclick="closeShift()">Закрыть смену</button>
-    <button class="minor" onclick="act('/api/receipt/cancel','Чек аннулирован')">Аннулировать чек</button>
+    <div class="rail-group">
+      <button class="minor" onclick="act('/api/shift/open','Смена открыта')">Открыть смену</button>
+      <button class="minor" onclick="act('/api/report/x','X-отчёт напечатан')">X-отчёт</button>
+      <button class="minor" onclick="closeShift()">Закрыть смену</button>
+      <button class="minor" onclick="act('/api/receipt/cancel','Чек аннулирован')">Аннулировать чек</button>
+    </div>
+    <div class="rule"></div>
+    <div class="rail-group">
+      <button class="minor" data-panel="journal" aria-pressed="false" onclick="showPanel('journal')">Журнал событий</button>
+      <button class="minor" data-panel="service" aria-pressed="false" onclick="showPanel('service')">Обслуживание</button>
+      <button class="minor" data-panel="wire" aria-pressed="false" onclick="showPanel('wire')">Журнал обмена</button>
+      <button class="minor" data-panel="conn" aria-pressed="false" onclick="showPanel('conn')">Подключение</button>
+    </div>
     <div class="rule"></div>
     <button class="minor quit" onclick="quitServer()">Выключить кассу</button>
+    <div class="plate">
+      <div id="p-device">—</div>
+      <div id="p-fn">—</div>
+    </div>
   </aside>
 
   <!-- работа -->
@@ -445,9 +485,8 @@
       <button class="go" onclick="confirmCorr()">Пробить чек коррекции</button>
     </section>
 
-    <div class="rule"></div>
-    <details>
-      <summary>Журнал событий</summary>
+    <section class="panel" id="panel-journal" hidden>
+      <h2>Журнал событий<button class="panel-close" onclick="showPanel(null)">× закрыть</button></h2>
       <p style="font-size:11px;color:var(--dim);margin:8px 0">
         Успехи и ошибки операций. Плашка сверху гаснет через несколько секунд,
         а номер ФД и фискальный признак нужны потом — здесь они не пропадают.
@@ -457,27 +496,10 @@
            border-radius:3px;padding:10px;max-height:220px;overflow:auto;
            white-space:pre-wrap;word-break:break-word;margin:0"></div>
       <button class="minor" onclick="clearJournal()">Очистить журнал</button>
-    </details>
+    </section>
 
-    <details>
-      <summary>Подключение</summary>
-      <div class="row c2" style="margin-top:12px">
-        <div><label for="s-host">Адрес кассы</label><input id="s-host" class="num"></div>
-        <div><label for="s-port">Порт</label><input type="number" id="s-port" class="num"></div>
-      </div>
-      <div class="row c2">
-        <div><label for="s-op-pwd">Пароль оператора</label><input type="number" id="s-op-pwd" class="num"></div>
-        <div><label for="s-ad-pwd">Пароль сисадмина</label><input type="number" id="s-ad-pwd" class="num"></div>
-      </div>
-      <p style="font-size:11px;color:var(--dim);line-height:1.5;margin:10px 0 0">
-        У Штрих-М по умолчанию оба пароля — 30. Позиции чека уходят под паролем
-        оператора, отчёты и фискальные операции — под паролем сисадмина.
-      </p>
-      <button class="minor" onclick="saveCfg()">Сохранить</button>
-    </details>
-
-    <details>
-      <summary>Обслуживание</summary>
+    <section class="panel" id="panel-service" hidden>
+      <h2>Обслуживание<button class="panel-close" onclick="showPanel(null)">× закрыть</button></h2>
       <p style="font-size:11px;color:var(--dim);line-height:1.5;margin:8px 0">
         Служебные данные ФН: срок действия, версия, итоги фискализации,
         очередь документов без квитанции ОФД. Читающие команды, ничего не печатают.
@@ -498,10 +520,10 @@
       <button class="minor" onclick="loadService()">Обновить</button>
       <button class="minor" onclick="confirmClockTime()">Сверить время</button>
       <button class="minor" onclick="confirmClockDate()">Сверить дату</button>
-    </details>
+    </section>
 
-    <details>
-      <summary>Журнал обмена с кассой</summary>
+    <section class="panel" id="panel-wire" hidden>
+      <h2>Журнал обмена с кассой<button class="panel-close" onclick="showPanel(null)">× закрыть</button></h2>
       <p style="font-size:11px;color:var(--dim);margin:8px 0">
         Кадры последней операции. Пригодится, если касса ответит непонятной ошибкой.
       </p>
@@ -510,7 +532,24 @@
            border-radius:3px;padding:10px;max-height:220px;overflow:auto;
            white-space:pre-wrap;word-break:break-all;margin:0">—</pre>
       <button class="minor" onclick="loadLog()">Обновить журнал</button>
-    </details>
+    </section>
+
+    <section class="panel" id="panel-conn" hidden>
+      <h2>Подключение<button class="panel-close" onclick="showPanel(null)">× закрыть</button></h2>
+      <div class="row c2" style="margin-top:12px">
+        <div><label for="s-host">Адрес кассы</label><input id="s-host" class="num"></div>
+        <div><label for="s-port">Порт</label><input type="number" id="s-port" class="num"></div>
+      </div>
+      <div class="row c2">
+        <div><label for="s-op-pwd">Пароль оператора</label><input type="number" id="s-op-pwd" class="num"></div>
+        <div><label for="s-ad-pwd">Пароль сисадмина</label><input type="number" id="s-ad-pwd" class="num"></div>
+      </div>
+      <p style="font-size:11px;color:var(--dim);line-height:1.5;margin:10px 0 0">
+        У Штрих-М по умолчанию оба пароля — 30. Позиции чека уходят под паролем
+        оператора, отчёты и фискальные операции — под паролем сисадмина.
+      </p>
+      <button class="minor" onclick="saveCfg()">Сохранить</button>
+    </section>
   </main>
 
   <!-- лента -->
@@ -601,16 +640,41 @@ function syncCorr() {
   draw();
 }
 
-// --- режим ---
+// --- режим и служебные панели ---
 
 function setMode(m) {
   mode = m;
-  $('m-sale').setAttribute('aria-pressed', m === 'sale');
-  $('m-corr').setAttribute('aria-pressed', m === 'corr');
-  $('pane-sale').hidden = m !== 'sale';
-  $('pane-corr').hidden = m !== 'corr';
+  panel = null;
   document.body.classList.toggle('correction', m === 'corr');
+  syncPanes();
   draw();
+}
+
+// Служебная панель занимает место формы чека: «внизу страницы» её никто
+// не находил. Форма не пересоздаётся, а прячется, — набранные позиции целы.
+let panel = null;
+function showPanel(p) {
+  panel = (panel === p) ? null : p;   // повторный клик по той же кнопке закрывает
+  syncPanes();
+  if (panel === 'service') loadService();
+  if (panel === 'wire') loadLog();
+}
+
+function syncPanes() {
+  const form = panel === null;
+  $('pane-sale').hidden = !(form && mode === 'sale');
+  $('pane-corr').hidden = !(form && mode === 'corr');
+  // Пока открыта служебная панель, переключатель режимов не нужен: он
+  // относится к форме чека, а формы на экране нет. Назад — «закрыть»
+  // в заголовке панели или повторный клик по кнопке слева.
+  document.querySelector('.modes').hidden = !form;
+  $('m-sale').setAttribute('aria-pressed', mode === 'sale');
+  $('m-corr').setAttribute('aria-pressed', mode === 'corr');
+  ['journal', 'service', 'wire', 'conn'].forEach(name => {
+    $('panel-' + name).hidden = panel !== name;
+  });
+  document.querySelectorAll('[data-panel]').forEach(b =>
+    b.setAttribute('aria-pressed', b.dataset.panel === panel));
 }
 
 // --- лента ---
@@ -928,33 +992,40 @@ async function status() {
         : (s.no_host ? 'адрес не задан' : 'нет связи');
       if (s.no_host && !hostPrompted) {
         hostPrompted = true;
-        say('Адрес кассы не задан. Укажите его в блоке «Подключение» внизу страницы.', 'err');
-        document.querySelector('details').open = true;
+        say('Адрес кассы не задан. Укажите его в панели «Подключение» слева.', 'err');
+        showPanel('conn');
       }
-      ['g-shift','g-receipt','g-mode','g-ofd','g-fd','g-fn','g-clock','g-device']
+      ['g-shift','g-receipt','g-ofd','g-fd','g-clock']
         .forEach(id => $(id).textContent = '\u2014');
+      $('g-mode').hidden = true;
       return;
     }
     lamp.className = 'lamp on';
     $('link').textContent = s.busy ? 'касса занята' : (s.demo ? 'эмулятор' : 'касса на связи');
     $('g-shift').textContent = s.shift_open ? `\u2116 ${s.shift_number} открыта` : 'закрыта';
     $('g-shift').className = s.shift_open ? '' : 'warn';
-    $('g-receipt').textContent = s.receipt_number;
+    // Режим ККТ (10h) и состояние смены (FF40h) — разные источники. В штатной
+    // работе режим 2 при открытой смене и режим 4 при закрытой дословно повторяют
+    // строку выше; показываем режим только когда он говорит что-то новое:
+    // «24 часа кончились», «открытый документ», «ожидание подтверждения даты»
+    // или расхождение двух источников между собой.
+    const dull = (s.mode_code === 2 && s.shift_open) || (s.mode_code === 4 && !s.shift_open);
+    $('g-mode').hidden = dull;
     $('g-mode').textContent = s.mode;
-    $('g-mode').className = s.receipt_open ? 'warn' : '';
+    $('g-receipt').textContent = s.receipt_number;
     $('g-ofd').textContent = s.ofd_queue;
     $('g-ofd').className = s.ofd_queue > 0 ? 'warn' : '';
     $('g-fd').textContent = s.last_fd;
-    $('g-fn').textContent = s.fn_number || '\u2014';
     $('g-clock').textContent = s.datetime;
     // Дату и время в фискальный документ ставит касса, а не компьютер.
     // Уехавшие часы — повод сходить в настройки ККТ до того, как пробивать.
     $('g-clock').className = clockDrift(s.datetime) > 5 ? 'warn' : '';
     $('svc-drift').textContent = clockDriftText(s.datetime);
     $('svc-drift').className = clockDrift(s.datetime) > 5 ? 'warn' : '';
-    $('g-device').textContent = deviceName
+    $('p-device').textContent = deviceName
       ? deviceName + (s.serial ? ` \u2116 ${s.serial}` : '')
       : '\u2014';
+    $('p-fn').textContent = s.fn_number ? `ФН ${s.fn_number}` : '\u2014';
 
     // Бумага: бит 1 флагов ККТ, «рулон чековой ленты». Проверен на живой кассе.
     // Датчик крышки в этой прошивке достоверно не опознан, поэтому тревогу

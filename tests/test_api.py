@@ -62,6 +62,12 @@ def test_статус_показывает_закрытую_смену(client):
     assert st["shift_open"] is False
 
 
+def test_статус_отдаёт_числовой_код_режима_согласованный_со_строкой(client):
+    st = client.get("/api/status").json()
+    assert st["mode_code"] == 4
+    assert st["mode"] == "Смена закрыта"
+
+
 def test_чек_без_позиций_не_уходит_в_кассу(client):
     r = client.post("/api/receipt", json={"positions": [], "cash": 0})
     assert r.status_code == 400
