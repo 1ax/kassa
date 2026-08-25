@@ -23,6 +23,7 @@ def client(tmp_path, monkeypatch):
     demo.DemoKKT.state.update(
         shift_open=False, shift_number=6, receipt_number=0,
         last_fd=24, receipt_open=False,
+        clock_offset=-268.0, date_pending=None, last_document_at=None,
     )
     # base_url важен: сервер принимает только локальное имя хоста,
     # а TestClient по умолчанию представляется как «testserver».
@@ -279,6 +280,88 @@ def test_панель_обслуживания_работает_на_эмуля�
     assert body["online"] is True
     assert body["fn_expiry_warning"] is False
     assert body["unconfirmed_warning"] is False
+
+
+# --- Сверка часов (21h/22h/23h) -------------------------------------------
+
+def test_сверка_времени_убирает_уход_часов(client):
+    r = client.post("/api/clock/time")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert abs(body["drift_seconds"] - (-268.0)) < 1.0
+    assert abs(demo.DemoKKT.state["clock_offset"]) < 1.0
+
+
+def test_сверка_времени_отказывает_при_открытой_смене(client):
+    client.post("/api/shift/open")
+    r = client.post("/api/clock/time")
+    assert r.status_code == 400
+    assert "смен" in r.json()["detail"].lower()
+
+
+def test_сверка_времени_отказывает_при_открытом_чеке(client):
+    demo.DemoKKT.state["receipt_open"] = True
+    r = client.post("/api/clock/time")
+    assert r.status_code == 400
+    assert "чек" in r.json()["detail"].lower()
+
+
+def test_сверка_времени_отказывает_если_время_раньше_последнего_фд(client):
+    from datetime import datetime, timedelta
+    demo.DemoKKT.state["last_document_at"] = datetime.now() + timedelta(days=1)
+    r = client.post("/api/clock/time")
+    assert r.status_code == 400
+    assert "документ" in r.json()["detail"].lower()
+
+
+def test_сверка_времени_отказывает_при_расхождении_больше_суток(client):
+    demo.DemoKKT.state["clock_offset"] = -2 * 24 * 3600
+    r = client.post("/api/clock/time")
+    assert r.status_code == 400
+    assert "суток" in r.json()["detail"].lower()
+
+
+def test_сверка_даты_приводит_дату_кассы_к_дате_компьютера(client):
+    from datetime import date
+    demo.DemoKKT.state["clock_offset"] = -120.0
+    r = client.post("/api/clock/date")
+    assert r.status_code == 200
+    assert demo.DemoKKT.state["date_pending"] is None
+    st = client.get("/api/status").json()
+    assert st["mode"] != "Ожидание подтверждения даты"
+    assert st["datetime"].split(" ")[0] == date.today().strftime("%d.%m.%Y")
+
+
+def test_из_режима_6_время_отказывает_а_дата_проходит(client):
+    from datetime import date
+    demo.DemoKKT.state["date_pending"] = date.today()
+    r1 = client.post("/api/clock/time")
+    assert r1.status_code == 400
+    assert "дат" in r1.json()["detail"].lower()
+
+    r2 = client.post("/api/clock/date")
+    assert r2.status_code == 200
+    assert demo.DemoKKT.state["date_pending"] is None
+
+
+def test_сверка_времени_отказывает_на_нечитаемых_часах_кассы(client, monkeypatch):
+    """Севшая батарейка кассы возвращает «00.00.0000» вместо даты — сверка не
+    должна ронять питоновским «time data does not match format», владелец
+    должен увидеть русское объяснение."""
+    real_long_status = demo.DemoKKT.long_status
+
+    def сломанный_long_status(self):
+        d = real_long_status(self)
+        d["date"] = "00.00.0000"
+        return d
+
+    monkeypatch.setattr(demo.DemoKKT, "long_status", сломанный_long_status)
+    r = client.post("/api/clock/time")
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "time data" not in detail
+    assert "час" in detail.lower()
 
 
 def test_days_left_обычный_случай():

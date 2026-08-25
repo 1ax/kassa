@@ -477,6 +477,7 @@
       <p style="font-size:11px;color:var(--dim);line-height:1.5;margin:8px 0">
         Служебные данные ФН: срок действия, версия, итоги фискализации,
         очередь документов без квитанции ОФД. Читающие команды, ничего не печатают.
+        Сверка часов ничего не печатает, но состояние кассы меняет.
       </p>
       <dl style="margin:12px 0 0">
         <div class="gauge"><dt>Срок действия ФН</dt><dd id="svc-expiry">—</dd></div>
@@ -486,9 +487,12 @@
         <div class="gauge"><dt>Система налогообложения</dt><dd id="svc-sno" style="font-size:13px">—</dd></div>
         <div class="gauge"><dt>Регистрация: № ФД / признак</dt><dd id="svc-fisc-fd" style="font-size:12px">—</dd></div>
         <div class="gauge"><dt>ФД без квитанции ОФД</dt><dd id="svc-unconfirmed">—</dd></div>
+        <div class="gauge"><dt>Расхождение часов</dt><dd id="svc-drift" style="font-size:12px">—</dd></div>
       </dl>
       <div id="svc-error" class="msg err" style="display:none;margin-top:12px"></div>
       <button class="minor" onclick="loadService()">Обновить</button>
+      <button class="minor" onclick="confirmClockTime()">Сверить время</button>
+      <button class="minor" onclick="confirmClockDate()">Сверить дату</button>
     </details>
 
     <details>
@@ -791,6 +795,23 @@ function closeShift() {
       () => act('/api/shift/close', 'Смена закрыта, Z-отчёт напечатан'));
 }
 
+function confirmClockTime() {
+  const pc = new Date().toLocaleString('ru-RU');
+  ask('Сверить время?',
+      `Образец — часы этого компьютера. Печати не будет, но состояние кассы ` +
+      `изменится: было ${$('g-clock').textContent} → станет ${pc}.`,
+      '', 'Сверить время', () => act('/api/clock/time', 'Время кассы сверено'));
+}
+
+function confirmClockDate() {
+  const pc = new Date().toLocaleString('ru-RU');
+  ask('Сверить дату?',
+      `Образец — часы этого компьютера. Печати не будет, но состояние кассы ` +
+      `изменится: было ${$('g-clock').textContent} → станет ${pc}. ` +
+      `Касса на миг уйдёт в режим ожидания подтверждения даты.`,
+      '', 'Сверить дату', () => act('/api/clock/date', 'Дата кассы сверена'));
+}
+
 function say(text, kind) {
   $('msg').innerHTML = `<div class="msg ${kind}">${esc(text)}</div>`;
   if (kind === 'ok') setTimeout(() => { $('msg').innerHTML = ''; }, 9000);
@@ -903,6 +924,8 @@ async function status() {
     // Дату и время в фискальный документ ставит касса, а не компьютер.
     // Уехавшие часы — повод сходить в настройки ККТ до того, как пробивать.
     $('g-clock').className = clockDrift(s.datetime) > 5 ? 'warn' : '';
+    $('svc-drift').textContent = clockDriftText(s.datetime);
+    $('svc-drift').className = clockDrift(s.datetime) > 5 ? 'warn' : '';
     $('g-device').textContent = deviceName
       ? deviceName + (s.serial ? ` \u2116 ${s.serial}` : '')
       : '\u2014';
@@ -927,6 +950,23 @@ function clockDrift(stamp) {
   const [, d, mo, y, hh, mi, ss] = m;
   const kkt = new Date(+y, +mo - 1, +d, +hh, +mi, +ss);
   return Math.abs(kkt - new Date()) / 60000;
+}
+
+// Текст расхождения часов кассы с компьютером: «касса … · ПК … · отстаёт/
+// спешит на X мин Y с». Знак расхождения не теряется, в отличие от clockDrift.
+function clockDriftText(stamp) {
+  const m = /^(\d{2})\.(\d{2})\.(\d{4}) (\d{2}):(\d{2}):(\d{2})$/.exec(stamp || '');
+  if (!m) return '—';
+  const [, d, mo, y, hh, mi, ss] = m;
+  const kkt = new Date(+y, +mo - 1, +d, +hh, +mi, +ss);
+  const now = new Date();
+  const diffSec = Math.round((kkt - now) / 1000);
+  const abs = Math.abs(diffSec);
+  const mins = Math.floor(abs / 60), secs = abs % 60;
+  const dir = diffSec < 0 ? 'отстаёт' : 'спешит';
+  const pad = n => String(n).padStart(2, '0');
+  const pc = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  return `касса ${stamp} · ПК ${pc} · ${dir} на ${mins} мин ${secs} с`;
 }
 
 let hostPrompted = false;      // просим адрес один раз, а не каждый опрос

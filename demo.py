@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import shtrih
 
@@ -29,6 +29,13 @@ class DemoKKT:
         "last_fd": 24,
         "receipt_open": False,
         "opened_at": None,
+        # На сколько секунд эмулируемые часы кассы отстают от компьютера.
+        # -268.0 — фактический замер живой кассы на 24.08.2026.
+        "clock_offset": -268.0,
+        # Дата, ожидающая подтверждения (23h). Не None — касса в режиме 6.
+        "date_pending": None,
+        # Момент последнего ФД. None — выводим его из эмулируемых часов.
+        "last_document_at": None,
     }
 
     def __init__(self, *args, **kwargs):
@@ -37,6 +44,20 @@ class DemoKKT:
 
     def _note(self, line: str) -> None:
         self.log.append(f"{time.strftime('%H:%M:%S')} {line}")
+
+    def _now(self) -> datetime:
+        """Эмулируемые часы кассы: время компьютера, сдвинутое на clock_offset."""
+        return datetime.now() + timedelta(seconds=self.state["clock_offset"])
+
+    def _mode(self) -> int:
+        """Режим ККТ: 6 при незавершённой сверке даты, иначе как у настоящей кассы."""
+        if self.state["date_pending"] is not None:
+            return 6
+        if self.state["receipt_open"]:
+            return 8
+        if self.state["shift_open"]:
+            return 2
+        return 4
 
     def connect(self) -> None:
         pass
@@ -57,7 +78,7 @@ class DemoKKT:
                 "language": 0, "name": "ШТРИХ-М-02Ф (демо)"}
 
     def short_status(self) -> dict:
-        mode = 8 if self.state["receipt_open"] else (2 if self.state["shift_open"] else 4)
+        mode = self._mode()
         return {
             "operator": 30, "flags": 0x0292, "flags_hex": "0x0292",
             "mode": mode, "mode_name": shtrih.ECR_MODES[mode], "mode_status": 0,
@@ -66,8 +87,8 @@ class DemoKKT:
         }
 
     def long_status(self) -> dict:
-        now = datetime.now()
-        mode = 8 if self.state["receipt_open"] else (2 if self.state["shift_open"] else 4)
+        now = self._now()
+        mode = self._mode()
         return {
             "operator": 30, "sw_version": "C1", "sw_build": 62922,
             "sw_date": "10.01.2025", "doc_number": self.state["last_fd"] + 1,
@@ -92,7 +113,8 @@ class DemoKKT:
                                 else "нет открытого документа",
             "has_document_data": self.state["receipt_open"],
             "shift_open": self.state["shift_open"], "warnings": 0,
-            "last_document_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "last_document_at": (self.state["last_document_at"] or self._now())
+                                 .strftime("%d.%m.%Y %H:%M"),
             "fn_number": "0000000000000000", "last_fd": self.state["last_fd"],
         }
 
@@ -120,6 +142,36 @@ class DemoKKT:
 
     def unconfirmed_documents(self) -> int:
         return 0
+
+    # -- время и дата --
+
+    def set_time(self, t):
+        if self.state["shift_open"]:
+            raise shtrih.KKTError(0x3C, "Смена открыта операция невозможна")
+        if self.state["date_pending"] is not None:
+            raise shtrih.KKTError(0x73, "Неверный режим ККТ")
+        real_now = datetime.now()
+        current = real_now + timedelta(seconds=self.state["clock_offset"])
+        target = current.replace(hour=t.hour, minute=t.minute, second=t.second,
+                                  microsecond=0)
+        self.state["clock_offset"] = (target - real_now).total_seconds()
+        self._note(f"установлено время кассы {t.hour:02d}:{t.minute:02d}:{t.second:02d}")
+
+    def set_date(self, d: date):
+        if self.state["shift_open"]:
+            raise shtrih.KKTError(0x3C, "Смена открыта операция невозможна")
+        self.state["date_pending"] = d
+        return self.confirm_date(d)
+
+    def confirm_date(self, d: date):
+        if self.state["date_pending"] is None or self.state["date_pending"] != d:
+            raise shtrih.KKTError(0x7C, "Не совпадает дата")
+        real_now = datetime.now()
+        current = real_now + timedelta(seconds=self.state["clock_offset"])
+        target = current.replace(year=d.year, month=d.month, day=d.day)
+        self.state["clock_offset"] = (target - real_now).total_seconds()
+        self.state["date_pending"] = None
+        self._note(f"дата кассы подтверждена: {d.strftime('%d.%m.%Y')}")
 
     # -- смена --
 

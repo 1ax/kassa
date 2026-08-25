@@ -43,6 +43,9 @@ NAK = 0x15
 CMD_SHORT_STATUS = b"\x10"       # Короткий запрос состояния
 CMD_LONG_STATUS = b"\x11"        # Запрос состояния ККТ
 CMD_BEEP = b"\x13"               # Гудок
+CMD_SET_TIME = b"\x21"           # Программирование времени
+CMD_SET_DATE = b"\x22"           # Программирование даты
+CMD_CONFIRM_DATE = b"\x23"       # Подтверждение программирования даты
 CMD_CUT = b"\x25"                # Отрезка чека
 CMD_X_REPORT = b"\x40"           # Суточный отчёт без гашения (X)
 CMD_Z_REPORT = b"\x41"           # Суточный отчёт с гашением (Z)
@@ -208,6 +211,18 @@ def quantity(qty: float | int | str) -> bytes:
 def password(pwd: int) -> bytes:
     """Пароль оператора или системного администратора -> 4 байта."""
     return int(pwd).to_bytes(4, "little")
+
+
+def _date_field(d: date) -> bytes:
+    """Дата -> «ДД ММ ГГ» обычными двоичными байтами, для команд 22h/23h."""
+    if not 2000 <= d.year <= 2099:
+        raise ValueError(f"Год вне диапазона 2000..2099: {d.year}")
+    return bytes([d.day, d.month, d.year - 2000])
+
+
+def _time_field(t) -> bytes:
+    """Время -> «ЧЧ ММ СС» обычными двоичными байтами, для команды 21h."""
+    return bytes([t.hour, t.minute, t.second])
 
 
 def text_field(s: str, length: int) -> bytes:
@@ -683,6 +698,27 @@ class KKT:
             "language": d[5],
             "name": d[6:].decode("cp1251", errors="replace").strip("\x00 "),
         }
+
+    # -- время и дата --
+
+    def set_time(self, t) -> Response:
+        """Команда 21h. Программирование времени ККТ («ЧЧ ММ СС»)."""
+        return self.execute(CMD_SET_TIME, password(self.admin_password) + _time_field(t))
+
+    def set_date(self, d: date) -> Response:
+        """
+        Команда 22h, затем 23h. Программирование даты ККТ.
+
+        После 22h касса встаёт в режим 6 «Ожидание подтверждения даты» и не
+        выходит из него, пока не придёт 23h с той же датой, — поэтому оба
+        кадра шлём одним вызовом, чтобы подтверждение нельзя было забыть.
+        """
+        self.execute(CMD_SET_DATE, password(self.admin_password) + _date_field(d))
+        return self.confirm_date(d)
+
+    def confirm_date(self, d: date) -> Response:
+        """Команда 23h. Подтверждение программирования даты — выход из режима 6."""
+        return self.execute(CMD_CONFIRM_DATE, password(self.admin_password) + _date_field(d))
 
     # -- смена --
 

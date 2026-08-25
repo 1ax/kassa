@@ -11,7 +11,7 @@
 именно она в своё время и подтвердила смещение поля.
 """
 
-from datetime import date
+from datetime import date, time
 
 import pytest
 
@@ -243,6 +243,59 @@ def test_send_tlv_шлёт_ff0c_с_паролем_сисадмина_и_стру
     frame = frames_sent(k)[0]
     assert frame[2:4] == shtrih.CMD_SEND_TLV
     assert frame[4:-1] == shtrih.password(88) + structure
+
+
+# --- Время и дата (21h/22h/23h) -------------------------------------------
+
+def test_set_time_шлёт_кадр_21h_с_временем_обычными_байтами():
+    k = shtrih.KKT("stub", 0, admin_password=30)
+    k._sock = FakeSocket([b"\x21\x00"])
+    k.set_time(time(14, 5, 9))
+    frames = frames_sent(k)
+    assert len(frames) == 1
+    frame = frames[0]
+    assert frame[2:3] == shtrih.CMD_SET_TIME
+    assert frame[1] == 8                      # CMD(1) + пароль(4) + ЧЧ ММ СС(3)
+    assert frame[3:7] == shtrih.password(30)
+    assert frame[7:10] == bytes([14, 5, 9])
+
+
+def test_set_date_шлёт_ровно_два_кадра_22h_и_23h_с_одинаковым_хвостом():
+    k = shtrih.KKT("stub", 0, admin_password=30)
+    k._sock = FakeSocket([b"\x22\x00", b"\x23\x00"])
+    k.set_date(date(2026, 8, 25))
+    frames = frames_sent(k)
+    assert len(frames) == 2
+    assert frames[0][2:3] == shtrih.CMD_SET_DATE
+    assert frames[1][2:3] == shtrih.CMD_CONFIRM_DATE
+    tail = shtrih.password(30) + bytes([25, 8, 26])
+    assert frames[0][3:10] == tail
+    assert frames[1][3:10] == tail
+
+
+def test_confirm_date_шлёт_один_кадр_23h_с_паролем_сисадмина_и_датой():
+    k = shtrih.KKT("stub", 0, admin_password=30)
+    k._sock = FakeSocket([b"\x23\x00"])
+    k.confirm_date(date(2026, 1, 2))
+    frames = frames_sent(k)
+    assert len(frames) == 1
+    assert frames[0][2:3] == shtrih.CMD_CONFIRM_DATE
+    assert frames[0][3:10] == shtrih.password(30) + bytes([2, 1, 26])
+
+
+def test_ошибка_0x7c_на_подтверждении_даты_поднимает_исключение():
+    # Ответ с кодом ошибки 0x7C плюс ответ на попытку узнать её название
+    k = kkt_with([b"\x23\x7c", b"\x6b\x37"])
+    with pytest.raises(shtrih.KKTError) as e:
+        k.confirm_date(date(2026, 8, 25))
+    assert e.value.code == 0x7C
+
+
+def test_date_field_отвергает_год_вне_2000_2099():
+    with pytest.raises(ValueError):
+        shtrih._date_field(date(1999, 12, 31))
+    with pytest.raises(ValueError):
+        shtrih._date_field(date(2100, 1, 1))
 
 
 # --- Разбор эталонных ответов живой кассы --------------------------------

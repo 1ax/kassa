@@ -459,6 +459,127 @@ def cancel_receipt():
     return _simple(lambda k: k.cancel_receipt(), "Чек аннулирован")
 
 
+def _clock_state(k) -> dict:
+    """
+    Прочитать всё, что нужно ограждениям сверки часов, — только читающими
+    командами (10h/11h/FF01h/FF40h), ни одна из них ничего не печатает.
+    """
+    short = k.short_status()
+    shift = k.shift_params()
+    fn = k.fn_status()
+    long = k.long_status()
+    try:
+        now = datetime.strptime(f"{long['date']} {long['time']}", "%d.%m.%Y %H:%M:%S")
+    except (ValueError, TypeError):
+        raise ValueError(
+            f"Касса вернула нечитаемые дату и время: «{long['date']} {long['time']}». "
+            "Похоже на сброс часов после севшей батарейки — кнопкой сверки тут не "
+            "обойтись, нужен сервис."
+        )
+    try:
+        last_document_at = datetime.strptime(fn["last_document_at"], "%d.%m.%Y %H:%M")
+    except (ValueError, TypeError):
+        # Строка не разобралась — не роняем сверку, но и не снимаем ограждение:
+        # просто не проверяем расхождение с последним ФД в этом заходе.
+        last_document_at = None
+    return {
+        "mode": short["mode"],
+        "shift_open": shift["shift_open"],
+        "receipt_open": short["receipt_open"],
+        "now": now,
+        "last_document_at": last_document_at,
+    }
+
+
+def _guard_shift_receipt_drift(state: dict, now: datetime) -> None:
+    """Ограждения 2-4: открытая смена, открытый чек, расхождение больше суток."""
+    if state["shift_open"]:
+        raise ValueError(
+            "Смена открыта. Сначала закройте её Z-отчётом, потом сверяйте часы."
+        )
+    if state["receipt_open"]:
+        raise ValueError(
+            "Открыт чек. Сначала аннулируйте его, потом сверяйте часы."
+        )
+    drift = (state["now"] - now).total_seconds()
+    if abs(drift) > 24 * 3600:
+        raise ValueError(
+            "Расхождение часов кассы больше суток — это не уход кварца, "
+            "а сброс часов. Разбираться нужно вручную."
+        )
+
+
+def _guard_last_document(state: dict, now: datetime) -> None:
+    """Ограждение 5: новое время не должно быть раньше момента последнего ФД."""
+    if state["last_document_at"] is not None and now < state["last_document_at"]:
+        raise ValueError(
+            "Новое время раньше момента последнего фискального документа. "
+            "ФН всё равно откажет с ошибкой «Неверные дата и/или время»."
+        )
+
+
+def _clock_result(was: datetime, now: datetime, message: str) -> dict:
+    return {
+        "ok": True,
+        "message": message,
+        "was": was.strftime("%d.%m.%Y %H:%M:%S"),
+        "now": now.strftime("%d.%m.%Y %H:%M:%S"),
+        "drift_seconds": (was - now).total_seconds(),
+    }
+
+
+@app.post("/api/clock/time")
+def clock_time():
+    """Сверить время кассы (21h) с часами этого компьютера."""
+    STATUS_CACHE["at"] = 0.0
+    try:
+        def run(k):
+            now = datetime.now()
+            state = _clock_state(k)
+            if state["mode"] == 6:
+                raise ValueError(
+                    "Касса ждёт подтверждения даты. Сначала нажмите «Сверить дату»."
+                )
+            _guard_shift_receipt_drift(state, now)
+            _guard_last_document(state, now)
+            k.set_time(now.time())
+            return state["now"], now
+
+        was, now = with_kkt(run)
+        return _clock_result(was, now, "Время кассы сверено")
+    except Exception as exc:
+        raise _fail(exc)
+    finally:
+        STATUS_CACHE["at"] = 0.0
+
+
+@app.post("/api/clock/date")
+def clock_date():
+    """Сверить дату кассы (22h+23h) с часами этого компьютера."""
+    STATUS_CACHE["at"] = 0.0
+    try:
+        def run(k):
+            now = datetime.now()
+            state = _clock_state(k)
+            if state["mode"] == 6:
+                # Смена в режиме 6 закрыта по определению — ограждения 2-4
+                # не нужны, но расхождение с последним ФД всё ещё проверяем.
+                _guard_last_document(state, now)
+                k.confirm_date(now.date())
+            else:
+                _guard_shift_receipt_drift(state, now)
+                _guard_last_document(state, now)
+                k.set_date(now.date())
+            return state["now"], now
+
+        was, now = with_kkt(run)
+        return _clock_result(was, now, "Дата кассы сверена")
+    except Exception as exc:
+        raise _fail(exc)
+    finally:
+        STATUS_CACHE["at"] = 0.0
+
+
 @app.post("/api/receipt")
 def punch_receipt(req: ReceiptRequest):
     if not req.positions:
