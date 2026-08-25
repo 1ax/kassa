@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
 import socket
@@ -29,6 +30,7 @@ import shtrih
 
 BASE = Path(__file__).parent
 CONFIG_PATH = BASE / "config.json"
+CLOCK_LOG = BASE / "clock.log"
 
 # Заготовка на случай, если config.json ещё нет и создать его не удалось.
 # Адрес конкретной кассы живёт в config.json, а не здесь: держать его в коде —
@@ -183,6 +185,177 @@ class ConfigRequest(BaseModel):
     tax_system: str = "usn_income"
 
 
+# --- Журнал ухода часов ---------------------------------------------------
+#
+# Часы кассы отстают — на сколько именно, раньше было допущением (что при
+# фискализации часы стояли точно). Здесь это допущение заменяется измерением:
+# журнал накапливает замеры расхождения, а drift_rate() считает по ним
+# скорость ухода. Журнал — вспомогательная вещь: сбой записи или чтения
+# (нет прав, каталог вместо файла, битая строка) не должен ронять ни
+# /api/status, ни /api/service, ни саму сверку часов.
+
+# Момент последнего замера (по часам компьютера). None, пока не инициализирован;
+# при первом обращении читаем последнюю строку файла, чтобы после перезапуска
+# сервера отсчёт часа шёл от реальной последней записи, а не с нуля.
+CLOCK_LOG_CACHE: dict = {"last_at": None, "initialized": False}
+
+# Уход часов за час — сотые доли секунды, чаще писать журнал бессмысленно,
+# а точек за неделю и так набирается достаточно для оценки скорости.
+CLOCK_LOG_INTERVAL = 3600.0
+
+
+def _read_clock_log(limit: int = 5000) -> list[dict]:
+    """
+    Хвост журнала замеров: последние `limit` строк.
+
+    Файл растёт примерно на 9 тысяч строк в год — читать его целиком незачем,
+    берём хвост через deque(maxlen=...). Ротации нет. Сбой чтения (файла нет,
+    каталог вместо файла, нет прав) не должен ронять вызывающего — молча
+    возвращаем что есть (в худшем случае пустой список), битые строки
+    пропускаем.
+    """
+    try:
+        with CLOCK_LOG.open("r", encoding="utf-8") as f:
+            tail = collections.deque(f, maxlen=limit)
+    except OSError:
+        return []
+    entries = []
+    for line in tail:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return entries
+
+
+def _clock_log_append(at: datetime, kkt_at: datetime, drift: float, *, kind: str | None = None) -> None:
+    """
+    Дописать в журнал одну строку замера расхождения часов.
+
+    `kind="sync"` — отметка об успешной сверке (21h/22h/23h), с расхождением,
+    которое было ДО сверки: после неё уход считается заново. У обычного
+    замера ключа `kind` нет.
+
+    Сбой записи (нет прав, каталог вместо файла, диск полон) не должен
+    ронять вызывающего — молча проглатываем и продолжаем.
+    """
+    record = {
+        "at": at.isoformat(timespec="seconds"),
+        "kkt": kkt_at.isoformat(timespec="seconds"),
+        "drift": drift,
+    }
+    if kind:
+        record["kind"] = kind
+    try:
+        with CLOCK_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _maybe_log_drift_sample(kkt_datetime: str) -> None:
+    """
+    Замер расхождения часов попутно со свежим /api/status — без единой лишней
+    команды на кассу: 11h там и так уже опрашивается на приборную панель.
+    Не чаще раза в час (CLOCK_LOG_INTERVAL).
+    """
+    try:
+        kkt_at = datetime.strptime(kkt_datetime, "%d.%m.%Y %H:%M:%S")
+    except (ValueError, TypeError):
+        return
+    at = datetime.now()
+
+    if not CLOCK_LOG_CACHE["initialized"]:
+        CLOCK_LOG_CACHE["initialized"] = True
+        last = _read_clock_log(limit=1)
+        if last:
+            try:
+                CLOCK_LOG_CACHE["last_at"] = datetime.fromisoformat(last[-1]["at"])
+            except (KeyError, ValueError, TypeError):
+                CLOCK_LOG_CACHE["last_at"] = None
+
+    last_at = CLOCK_LOG_CACHE["last_at"]
+    if last_at is not None and (at - last_at).total_seconds() < CLOCK_LOG_INTERVAL:
+        return
+
+    _clock_log_append(at, kkt_at, (kkt_at - at).total_seconds())
+    CLOCK_LOG_CACHE["last_at"] = at
+
+
+def drift_rate(entries: list[dict]) -> dict | None:
+    """
+    Скорость ухода часов кассы по крайним точкам журнала.
+
+    Берём отрезок ПОСЛЕ последней отметки о сверке (`kind: sync`) — сама
+    отметка в отрезок не входит; если сверок не было, берём весь журнал.
+    Считаем по двум крайним точкам, а не регрессией: сверка — событие
+    редкое, оценка «было — стало» по краям достаточно точна и её легко
+    проверить глазами.
+
+    Нужно минимум 3 точки и минимум 7 суток между первой и последней точкой
+    отрезка — иначе данных мало, возвращаем None. Битые строки и записи
+    без нужных ключей пропускаем, а не падаем.
+    """
+    tail: list[tuple[datetime, float]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("kind") == "sync":
+            tail = []          # отрезок начинается заново после каждой сверки
+            continue
+        if "at" not in entry or "drift" not in entry:
+            continue
+        try:
+            at = datetime.fromisoformat(entry["at"])
+            drift = float(entry["drift"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        tail.append((at, drift))
+
+    if len(tail) < 3:
+        return None
+
+    first_at, first_drift = tail[0]
+    last_at, last_drift = tail[-1]
+    span_days = (last_at - first_at).total_seconds() / 86400.0
+    if span_days < 7:
+        return None
+
+    return {
+        "rate": (last_drift - first_drift) / span_days,
+        "days": span_days,
+        "points": len(tail),
+    }
+
+
+def _drift_rate_fields() -> dict:
+    """
+    Поля скорости ухода для /api/service — считаются из журнала на диске,
+    кассу не спрашивают. Отдельная функция, чтобы подмешать поля в любую
+    ветку ответа, включая offline: журнал от кассы не зависит.
+    """
+    try:
+        rate = drift_rate(_read_clock_log())
+    except Exception:
+        rate = None
+    if rate is None:
+        return {
+            "clock_drift_rate": None,
+            "clock_drift_rate_days": None,
+            "clock_drift_rate_points": None,
+        }
+    return {
+        "clock_drift_rate": rate["rate"],
+        "clock_drift_rate_days": rate["days"],
+        "clock_drift_rate_points": rate["points"],
+    }
+
+
 # --- Приложение ----------------------------------------------------------
 
 app = FastAPI(title="Касса", docs_url=None, redoc_url=None)
@@ -313,6 +486,13 @@ def status():
 
     STATUS_CACHE["value"] = value
     STATUS_CACHE["at"] = time.monotonic()
+    if "datetime" in value:
+        # Только на пути успешного свежего ответа — не из кэша и не с ветки
+        # ошибки/занятости, где часов кассы мы не читали.
+        try:
+            _maybe_log_drift_sample(value["datetime"])
+        except Exception:
+            pass
     return value
 
 
@@ -343,7 +523,7 @@ def service():
     """
     if not DEMO and not load_config()["host"].strip():
         return {"online": False, "demo": False, "no_host": True,
-                "error": "Адрес кассы не задан"}
+                "error": "Адрес кассы не задан", **_drift_rate_fields()}
 
     now = time.monotonic()
     cached = SERVICE_CACHE["value"]
@@ -375,12 +555,15 @@ def service():
         if cached is not None:
             return {**cached, "busy": True}
         return {"online": False, "busy": True, "demo": DEMO,
-                "error": "Касса занята другой операцией"}
+                "error": "Касса занята другой операцией", **_drift_rate_fields()}
     except (OSError, socket.timeout, shtrih.ProtocolError) as exc:
         value = {"online": False, "demo": DEMO, "error": str(exc)}
     except Exception as exc:
         raise _fail(exc)
 
+    # Скорость ухода — из журнала на диске, кассу не спрашивает, поэтому
+    # попадает в ответ и на ветке online: false (журнал от связи не зависит).
+    value.update(_drift_rate_fields())
     SERVICE_CACHE["value"] = value
     SERVICE_CACHE["at"] = time.monotonic()
     return value
@@ -546,7 +729,12 @@ def clock_time():
             return state["now"], now
 
         was, now = with_kkt(run)
-        return _clock_result(was, now, "Время кассы сверено")
+        result = _clock_result(was, now, "Время кассы сверено")
+        try:
+            _clock_log_append(now, was, result["drift_seconds"], kind="sync")
+        except Exception:
+            pass
+        return result
     except Exception as exc:
         raise _fail(exc)
     finally:
@@ -573,7 +761,12 @@ def clock_date():
             return state["now"], now
 
         was, now = with_kkt(run)
-        return _clock_result(was, now, "Дата кассы сверена")
+        result = _clock_result(was, now, "Дата кассы сверена")
+        try:
+            _clock_log_append(now, was, result["drift_seconds"], kind="sync")
+        except Exception:
+            pass
+        return result
     except Exception as exc:
         raise _fail(exc)
     finally:

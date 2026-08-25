@@ -5,6 +5,7 @@
 ничего не печатают и никуда не отправляют.
 """
 
+import json
 import time
 
 import pytest
@@ -18,8 +19,11 @@ import demo
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(kassa_app, "DEMO", True)
     monkeypatch.setattr(kassa_app, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(kassa_app, "CLOCK_LOG", tmp_path / "clock.log")
     kassa_app.STATUS_CACHE["value"] = None
     kassa_app.STATUS_CACHE["at"] = 0.0
+    kassa_app.CLOCK_LOG_CACHE["last_at"] = None
+    kassa_app.CLOCK_LOG_CACHE["initialized"] = False
     demo.DemoKKT.state.update(
         shift_open=False, shift_number=6, receipt_number=0,
         last_fd=24, receipt_open=False,
@@ -383,3 +387,96 @@ def test_остановка_не_трогает_чужой_сервис(capsys):
     free = kassa_app.free_port(9700)
     assert kassa_app.stop_instance(free) == 0
     assert "никто не слушает" in capsys.readouterr().out
+
+
+# --- Журнал ухода часов ----------------------------------------------------
+
+def test_первый_статус_дописывает_замер(client):
+    client.get("/api/status")
+    lines = kassa_app.CLOCK_LOG.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert {"at", "kkt", "drift"} <= entry.keys()
+    assert entry["drift"] < 0
+    assert abs(entry["drift"] - (-268.0)) < 5.0
+
+
+def test_второй_статус_подряд_не_добавляет_строку(client):
+    client.get("/api/status")
+    client.get("/api/status")
+    lines = kassa_app.CLOCK_LOG.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+
+
+def test_успешная_сверка_дописывает_отметку_sync(client):
+    r = client.post("/api/clock/time")
+    assert r.status_code == 200
+    lines = kassa_app.CLOCK_LOG.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["kind"] == "sync"
+    assert abs(entry["drift"] - r.json()["drift_seconds"]) < 0.001
+
+
+def test_скорость_ухода_считается_по_отрезку_после_сверки():
+    from datetime import datetime, timedelta
+    base = datetime(2026, 1, 1)
+    entries = [
+        {"at": base.isoformat(), "kkt": base.isoformat(), "drift": -1000.0},
+        {"at": (base + timedelta(days=1)).isoformat(), "kkt": "", "drift": -1010.0,
+         "kind": "sync"},
+        {"at": (base + timedelta(days=2)).isoformat(), "drift": -1.0},
+        {"at": (base + timedelta(days=5)).isoformat(), "drift": -3.0},
+        {"at": (base + timedelta(days=10)).isoformat(), "drift": -5.0},
+    ]
+    result = kassa_app.drift_rate(entries)
+    assert result is not None
+    assert result["points"] == 3
+    assert abs(result["days"] - 8.0) < 1e-9
+    assert abs(result["rate"] - ((-5.0 - (-1.0)) / 8.0)) < 1e-9
+
+
+def test_скорость_ухода_none_при_нехватке_данных():
+    from datetime import datetime, timedelta
+    base = datetime(2026, 1, 1)
+    # точек меньше трёх, хотя плечо больше 7 суток
+    мало_точек = [
+        {"at": base.isoformat(), "drift": -1.0},
+        {"at": (base + timedelta(days=10)).isoformat(), "drift": -5.0},
+    ]
+    assert kassa_app.drift_rate(мало_точек) is None
+
+    # точек достаточно, но плечо меньше 7 суток
+    короткое_плечо = [
+        {"at": base.isoformat(), "drift": -1.0},
+        {"at": (base + timedelta(days=1)).isoformat(), "drift": -2.0},
+        {"at": (base + timedelta(days=2)).isoformat(), "drift": -3.0},
+    ]
+    assert kassa_app.drift_rate(короткое_плечо) is None
+
+
+def test_скорость_ухода_не_падает_на_мусоре():
+    from datetime import datetime, timedelta
+    base = datetime(2026, 1, 1)
+    entries = [
+        "не словарь",
+        {"at": "не дата", "drift": -1.0},
+        {"drift": -1.0},                       # нет at
+        {"at": base.isoformat()},               # нет drift
+        {"at": base.isoformat(), "drift": -1.0},
+        {"at": (base + timedelta(days=4)).isoformat(), "drift": -2.0},
+        {"at": (base + timedelta(days=8)).isoformat(), "drift": -4.0},
+    ]
+    result = kassa_app.drift_rate(entries)
+    assert result is not None
+    assert result["points"] == 3
+
+
+def test_недоступный_журнал_не_ломает_статус(client, tmp_path, monkeypatch):
+    """Каталог вместо файла журнала не должен ронять /api/status."""
+    bad = tmp_path / "clock_dir.log"
+    bad.mkdir()
+    monkeypatch.setattr(kassa_app, "CLOCK_LOG", bad)
+    r = client.get("/api/status")
+    assert r.status_code == 200
+    assert r.json()["online"] is True

@@ -488,6 +488,7 @@
         <div class="gauge"><dt>Регистрация: № ФД / признак</dt><dd id="svc-fisc-fd" style="font-size:12px">—</dd></div>
         <div class="gauge"><dt>ФД без квитанции ОФД</dt><dd id="svc-unconfirmed">—</dd></div>
         <div class="gauge"><dt>Расхождение часов</dt><dd id="svc-drift" style="font-size:12px">—</dd></div>
+        <div class="gauge"><dt>Скорость ухода</dt><dd id="svc-rate" style="font-size:12px">—</dd></div>
       </dl>
       <div id="svc-error" class="msg err" style="display:none;margin-top:12px"></div>
       <button class="minor" onclick="loadService()">Обновить</button>
@@ -1010,6 +1011,18 @@ async function loadService() {
     }
     if (!r.ok) { fail(`Сервер ответил ошибкой ${r.status}`); return; }
     const s = await r.json();
+    // Скорость ухода считается из журнала на диске и от связи с кассой не
+    // зависит — заполняем её до проверки online, чтобы при обрыве связи
+    // остальная панель показала ошибку, а эта строка не пропадала.
+    if (s.clock_drift_rate === null || s.clock_drift_rate === undefined) {
+      $('svc-rate').textContent = 'данных мало: нужно 7 суток замеров';
+    } else {
+      const perDay = Math.abs(s.clock_drift_rate).toFixed(1).replace('.', ',');
+      const dir = s.clock_drift_rate < 0 ? 'отстаёт' : 'спешит';
+      const rateDays = Math.round(s.clock_drift_rate_days);
+      $('svc-rate').textContent =
+        `${dir} на ${perDay} с/сутки · замеры за ${rateDays} сут, точек: ${s.clock_drift_rate_points}`;
+    }
     if (!s.online) {
       fail(s.error || 'Нет связи с кассой');
       return;
