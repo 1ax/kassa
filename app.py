@@ -75,6 +75,20 @@ STALE_TTL = 5.0
 SERVICE_CACHE: dict = {"at": 0.0, "value": None}
 SERVICE_TTL = 60.0
 
+# Панель готовности к ФФД 1.2 — ещё реже, чем панель обслуживания: версии
+# ФФД в отчёте о регистрации меняются только при перерегистрации кассы,
+# гонять FF0Eh на каждый заход в панель незачем.
+FFD_CACHE: dict = {"at": 0.0, "value": None}
+FFD_TTL = 600.0
+
+# Версии ФФД, под которые в программе есть готовая ветка печати чеков.
+# Ветка 1.05 остаётся навсегда: ветка 1.2 добавится рядом с ней, а не вместо.
+CODE_FFD = ("1.05",)
+
+# Порядок версий ФФД по возрастанию (значения shtrih.FFD_VERSIONS) — нужен,
+# чтобы понять, что касса «ушла» на версию новее, чем умеет программа.
+_FFD_ORDER = ["1.0", "1.05", "1.1", "1.2"]
+
 # Панель открывает человек, а не таймер, поэтому она вправе подождать замок,
 # в отличие от приборной панели (там wait=0 — своё осознанное решение, не
 # трогать). 15 секунд — компромисс: обычная гонка с опросом статуса при
@@ -562,6 +576,19 @@ def status():
     return {**value, "stale": stale}
 
 
+def _ffd_by_length(data_length: int) -> str | None:
+    """
+    Версия ФФД по длине данных FF09h — грубая, но независимая от FF0Eh
+    прикидка (факт с живой кассы 25.08.2026): 47/48 байт у ФФД 1.0/1.05,
+    64 байта у 1.1/1.2. Иная длина — не наш случай, отдаём None.
+    """
+    if data_length in (47, 48):
+        return "1.05"
+    if data_length == 64:
+        return "1.1/1.2"
+    return None
+
+
 def days_left(expiry: str, today: date | None = None) -> int | None:
     """
     Сколько дней осталось до истечения срока действия ФН.
@@ -613,6 +640,7 @@ def service():
             "fiscalization": fiscal,
             "unconfirmed": unconfirmed,
             "unconfirmed_warning": unconfirmed > 0,
+            "ffd_by_length": _ffd_by_length(fiscal["data_length"]),
         }
 
     try:
@@ -632,6 +660,206 @@ def service():
     value.update(_drift_rate_fields())
     SERVICE_CACHE["value"] = value
     SERVICE_CACHE["at"] = time.monotonic()
+    return value
+
+
+def _ffd_snapshot_stale(sw_date: str, fiscalized_at: str) -> bool:
+    """
+    Прошивку ККТ обновляли уже после регистрации? Сравниваем дату ПО ККТ
+    (long_status()["sw_date"]) с датой фискализации (fiscalization()["at"]):
+    если прошивка новее, теги 1189/1190 сняты при регистрации и могли
+    устареть. Неразбираемая дата с любой стороны — не повод падать, просто
+    «не устарело».
+    """
+    try:
+        sw = datetime.strptime(sw_date, "%d.%m.%Y").date()
+        fisc = datetime.strptime(fiscalized_at.split(" ")[0], "%d.%m.%Y").date()
+    except (ValueError, TypeError, IndexError):
+        return False
+    return sw > fisc
+
+
+@app.get("/api/ffd")
+def ffd():
+    """
+    Готовность к переходу на ФФД 1.2: что умеет касса сейчас (тег 1209),
+    что умеет прошивка ККТ и ФН (теги 1189/1190), и умеет ли это программа.
+
+    Команда FF0Eh читает данные из архива отчёта о регистрации, а не что-то
+    измеряет заново — версии ФФД меняются только при перерегистрации кассы,
+    поэтому кэш держим гораздо дольше, чем у /api/status и /api/service.
+    """
+    if not DEMO and not load_config()["host"].strip():
+        return {"online": False, "demo": False, "no_host": True,
+                "error": "Адрес кассы не задан"}
+
+    now = time.monotonic()
+    cached = FFD_CACHE["value"]
+    if cached is not None and now - FFD_CACHE["at"] < FFD_TTL:
+        return cached
+
+    def read(k):
+        unsupported = False
+        try:
+            versions = k.ffd_versions()
+        except shtrih.KKTError as exc:
+            if exc.code != 0x37:
+                raise
+            unsupported = True
+            versions = {"report": None, "current": None, "kkt": None, "fn": None}
+
+        fiscal = k.fiscalization()
+        expiry = k.fn_expiry()
+        fn_ver = k.fn_version()
+        fn_stat = k.fn_status()
+        short = k.short_status()
+        ofd = k.ofd_status()
+        unconfirmed = k.unconfirmed_documents()
+        long = k.long_status()
+
+        current = shtrih.FFD_VERSIONS.get(versions["current"])
+        kkt_max = shtrih.FFD_VERSIONS.get(versions["kkt"])
+        fn_max = shtrih.FFD_VERSIONS.get(versions["fn"])
+        by_length = _ffd_by_length(fiscal["data_length"])
+        mismatch = (
+            current is not None and by_length is not None
+            and current not in by_length.split("/")
+        )
+        stale = _ffd_snapshot_stale(long["sw_date"], fiscal["at"])
+        _expiry_days = days_left(expiry["expiry"])
+
+        checks = [
+            {
+                "key": "ffd_current",
+                "title": "ФФД кассы сейчас",
+                "value": current or "неизвестно",
+                "state": "unknown" if current is None else ("warn" if mismatch else "ok"),
+                "note": (
+                    f"Тег 1209 говорит «{current}», длина ответа FF09h — «{by_length}»"
+                    if mismatch else ""
+                ),
+            },
+            {
+                "key": "fn",
+                "title": "ФН поддерживает 1.2",
+                "value": fn_max or "неизвестно",
+                "state": ("unknown" if fn_max is None
+                          else ("ok" if fn_max == "1.2" else "warn")),
+                "note": f"ПО ФН {fn_ver['version']}, номер ФН {fn_stat['fn_number']}",
+            },
+            {
+                "key": "kkt",
+                "title": "ККТ поддерживает 1.2",
+                "value": kkt_max or "неизвестно",
+                "state": ("unknown" if kkt_max is None
+                          else ("ok" if kkt_max == "1.2" else "warn")),
+                "note": (
+                    f"Прошивка {long['sw_version']} сборка {long['sw_build']} "
+                    f"от {long['sw_date']}"
+                    + (", тег записан при регистрации и мог устареть после "
+                       "обновления прошивки" if stale else "")
+                ),
+            },
+            {
+                "key": "fn_expiry",
+                "title": "Срок действия ФН",
+                "value": expiry["expiry"],
+                "state": ("unknown" if _expiry_days is None
+                          else ("warn" if _expiry_days < 60 else "ok")),
+                "note": (
+                    "Меньше 60 дней — перейти на 1.2 не успеть; для ФН на 36 месяцев "
+                    "с признаком «подакцизные товары» порог выше — 700 дней"
+                ),
+            },
+            {
+                "key": "shift",
+                "title": "Смена закрыта",
+                "value": "нет" if (fn_stat["shift_open"] or short["receipt_open"]) else "да",
+                "state": "warn" if (fn_stat["shift_open"] or short["receipt_open"]) else "ok",
+                "note": ("" if not (fn_stat["shift_open"] or short["receipt_open"])
+                         else "Смена или чек сейчас открыты"),
+            },
+            {
+                "key": "ofd",
+                "title": "Данные переданы в ОФД",
+                "value": f"очередь {ofd['queue_length']}, без квитанции {unconfirmed}",
+                "state": "ok" if ofd["queue_length"] == 0 and unconfirmed == 0 else "warn",
+                "note": "",
+            },
+            {
+                "key": "code",
+                "title": "Программа умеет 1.2",
+                "value": "нет: есть ветка 1.05",
+                "state": "warn",
+                "note": "Ветка 1.2 будет добавлена рядом с 1.05, а не вместо неё",
+            },
+        ]
+
+        blocked_fn = fn_max is not None and fn_max != "1.2"
+        max_code_ffd = max(CODE_FFD, key=_FFD_ORDER.index)
+        blocked_current = (
+            current is not None and current not in CODE_FFD
+            and _FFD_ORDER.index(current) > _FFD_ORDER.index(max_code_ffd)
+        )
+        unknown_verdict = unsupported or (current is None and kkt_max is None and fn_max is None)
+
+        if unknown_verdict:
+            verdict_state = "unknown"
+            verdict_text = "Версии ФФД не прочитались — судить о готовности перехода нельзя."
+        elif blocked_fn or blocked_current:
+            verdict_state = "blocked"
+            reasons = []
+            if blocked_fn:
+                reasons.append("ФН не поддерживает 1.2, нужна замена ФН")
+            if blocked_current:
+                reasons.append(
+                    f"касса уже работает по ФФД {current}, "
+                    f"а программа умеет печатать только {', '.join(CODE_FFD)}"
+                )
+            verdict_text = "Переход невозможен: " + "; ".join(reasons) + "."
+        elif any(c["state"] == "warn" for c in checks):
+            verdict_state = "warn"
+            verdict_text = "Пока не готово: в программе есть только ветка ФФД 1.05."
+        else:
+            verdict_state = "ok"
+            verdict_text = "Все условия для перехода на ФФД 1.2 выполнены."
+
+        return {
+            "online": True,
+            "demo": DEMO,
+            "unsupported": unsupported,
+            "report": versions["report"],
+            "current": current,
+            "current_by_length": by_length,
+            "current_mismatch": mismatch,
+            "kkt_max": kkt_max,
+            "fn_max": fn_max,
+            "snapshot": {
+                "sw_date": long["sw_date"],
+                "sw_version": long["sw_version"],
+                "sw_build": long["sw_build"],
+                "fiscalized_at": fiscal["at"],
+                "stale": stale,
+            },
+            "code_ffd": list(CODE_FFD),
+            "checks": checks,
+            "verdict": {"state": verdict_state, "text": verdict_text},
+        }
+
+    try:
+        value = with_kkt(read, wait=SERVICE_WAIT, record=False)
+    except Busy:
+        if cached is not None:
+            return {**cached, "busy": True}
+        return {"online": False, "busy": True, "demo": DEMO,
+                "error": "Касса занята другой операцией"}
+    except (OSError, socket.timeout, shtrih.ProtocolError) as exc:
+        value = {"online": False, "demo": DEMO, "error": str(exc)}
+    except Exception as exc:
+        raise _fail(exc)
+
+    FFD_CACHE["value"] = value
+    FFD_CACHE["at"] = time.monotonic()
     return value
 
 

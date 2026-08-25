@@ -61,6 +61,10 @@ CMD_FN_EXPIRY = b"\xff\x03"      # Запрос срока действия ФН
 CMD_FN_VERSION = b"\xff\x04"     # Запрос версии ФН
 CMD_FISCALIZATION = b"\xff\x09"  # Запрос итогов последней фискализации
 CMD_SEND_TLV = b"\xff\x0c"       # Передать произвольную TLV структуру
+# Запрос параметра открытия ФН (TLV отчёта о регистрации/перерегистрации).
+# FF60h «Запрос параметра фискализации» выглядит естественной альтернативой,
+# но на прошивке C1/62922 не поддерживается — отвечает ошибкой 0x37.
+CMD_FN_REG_PARAM = b"\xff\x0e"
 CMD_CORRECTION_BEGIN = b"\xff\x35"   # Начать формирование чека коррекции
 CMD_OFD_STATUS = b"\xff\x39"     # Статус информационного обмена с ОФД
 CMD_UNCONFIRMED = b"\xff\x3f"    # Запрос количества ФД без квитанции ОФД
@@ -163,6 +167,14 @@ ECR_MODES = {
     14: "Печать подкладного документа",
     15: "Фискальный подкладной документ сформирован",
 }
+
+# Теги TLV отчёта о регистрации, отдаваемые командой FF0Eh
+TAG_FFD_VERSION = 1209   # версия ФФД, по которой касса работает сейчас
+TAG_FFD_KKT = 1189       # максимальная версия ФФД, которую умеет ККТ
+TAG_FFD_FN = 1190        # максимальная версия ФФД, которую умеет ФН
+
+# Значения версий ФФД (приказ ФНС) — числовой код тега -> обозначение
+FFD_VERSIONS = {1: "1.0", 2: "1.05", 3: "1.1", 4: "1.2"}
 
 # Типы фискальных документов (ответ FF01h, байт «текущий документ»)
 FN_DOCUMENTS = {
@@ -674,12 +686,84 @@ class KKT:
             "work_modes": d[38],
             "fd": int.from_bytes(d[40:44], "little"),
             "fp": int.from_bytes(d[44:48], "little"),
+            # Длина ответа FF09h сама по себе — грубый признак версии ФФД:
+            # 47/48 байт у 1.0/1.05, 64 у 1.1/1.2 (см. app.py, _ffd_by_length).
+            "data_length": len(d),
         }
 
     def unconfirmed_documents(self) -> int:
         """Команда FF3Fh. Количество ФД, на которые нет квитанции ОФД."""
         r = self.execute(CMD_UNCONFIRMED, password(self.admin_password))
         return int.from_bytes(r.data[0:2], "little")
+
+    def registration_param(self, tag: int, report: int = 1) -> bytes | None:
+        """
+        Команда FF0Eh. Один TLV-параметр из отчёта о регистрации/перерегистрации ФН.
+
+        Запрос: пароль сисадмина (4 байта) + номер отчёта (1 байт, отчёты
+        нумеруются с 1) + номер тега (2 байта LE). Ответ (раскладка снята
+        с живой ККТ 25.08.2026): код ошибки (1 байт, в r.error_code) + TLV —
+        тег (2 байта LE) + длина значения (2 байта LE) + значение. Метод
+        отдаёт только значение.
+
+        Код ошибки 0x08 «нет запрошенных данных» — не сбой, а сигнал «такого
+        отчёта или тега в архиве ФН нет»: возвращаем None вместо исключения.
+        Остальные ненулевые коды поднимают KKTError, как execute().
+        """
+        data = password(self.admin_password) + bytes([report]) + struct.pack("<H", tag)
+        r = self.send(CMD_FN_REG_PARAM, data)
+        if r.error_code == 0x08:
+            return None
+        if not r.ok:
+            raise KKTError(r.error_code, self.error_name(r.error_code))
+        if len(r.data) < 4:
+            raise ProtocolError(
+                f"Ответ FF0Eh короче TLV-заголовка: {len(r.data)} байт"
+            )
+        got_tag, length = struct.unpack("<HH", r.data[0:4])
+        if got_tag != tag:
+            raise ProtocolError(
+                f"Ответ FF0Eh содержит тег {got_tag}, ожидался {tag}"
+            )
+        return r.data[4:4 + length]
+
+    def last_registration_report(self, limit: int = 20) -> int:
+        """
+        Номер последнего отчёта о регистрации/перерегистрации ФН.
+
+        На живой кассе 25.08.2026 нумерация отчётов начинается с 1; номера
+        без данных в архиве ФН отвечают 0x08. Перебираем номера вверх от 1,
+        пока тег 1209 отвечает, — последний ответивший и есть искомый.
+        Если не ответил даже первый, отдаём 1 (регистрация есть всегда).
+        Больше `limit` запросов не делаем.
+        """
+        last = 1
+        for report in range(1, limit + 1):
+            if self.registration_param(TAG_FFD_VERSION, report) is None:
+                break
+            last = report
+        return last
+
+    def ffd_versions(self) -> dict:
+        """
+        Сырые факты о версиях ФФД из последнего отчёта о регистрации:
+        текущая версия кассы (тег 1209), максимум, который умеет ККТ
+        (1189), максимум, который умеет ФН (1190). Числовые коды тега,
+        не строки — расшифровка (FFD_VERSIONS) и любые выводы остаются
+        на стороне вызывающего, здесь их не считаем.
+        """
+        report = self.last_registration_report()
+
+        def read(tag: int) -> int | None:
+            value = self.registration_param(tag, report)
+            return int.from_bytes(value, "little") if value else None
+
+        return {
+            "report": report,
+            "current": read(TAG_FFD_VERSION),
+            "kkt": read(TAG_FFD_KKT),
+            "fn": read(TAG_FFD_FN),
+        }
 
     def device_type(self) -> dict:
         """

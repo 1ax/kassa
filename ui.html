@@ -77,6 +77,7 @@
     color: var(--text);
   }
   .gauge dd.warn { color: var(--brass); }
+  .rail-group button.warn { color: var(--brass); border-color: var(--brass); }
   .gauge dd.bad { color: var(--alarm); }
   .gauge dd.sub {
     font-family: var(--sans); font-size: 11px; color: var(--brass); margin-top: 3px;
@@ -316,6 +317,7 @@
     <div class="rail-group">
       <button class="minor" data-panel="journal" aria-pressed="false" onclick="showPanel('journal')">Журнал событий</button>
       <button class="minor" data-panel="service" aria-pressed="false" onclick="showPanel('service')">Обслуживание</button>
+      <button class="minor" id="ffd-btn" data-panel="ffd" aria-pressed="false" onclick="showPanel('ffd')">Переход на ФФД 1.2</button>
       <button class="minor" data-panel="wire" aria-pressed="false" onclick="showPanel('wire')">Журнал обмена</button>
       <button class="minor" data-panel="conn" aria-pressed="false" onclick="showPanel('conn')">Подключение</button>
     </div>
@@ -522,6 +524,37 @@
       <button class="minor" onclick="confirmClockDate()">Сверить дату</button>
     </section>
 
+    <section class="panel" id="panel-ffd" hidden>
+      <h2>Переход на ФФД 1.2<button class="panel-close" onclick="showPanel(null)">× закрыть</button></h2>
+      <p style="font-size:11px;color:var(--dim);line-height:1.5;margin:8px 0">
+        Готовность кассы к переходу на ФФД 1.2. Только читает кассу, ничего не печатает.
+      </p>
+      <div id="ffd-verdict" class="msg" style="display:none"></div>
+      <div id="ffd-error" class="msg err" style="display:none"></div>
+      <fieldset style="margin-top:16px">
+        <legend>Условия</legend>
+        <p id="ffd-unsupported" style="display:none;font-size:11px;color:var(--dim);line-height:1.5;margin:0 0 10px">
+          Команда FF0Eh этой прошивкой не поддерживается: версия ФФД определена только
+          по длине ответа FF09h.
+        </p>
+        <dl id="ffd-checks" style="margin:0"></dl>
+      </fieldset>
+      <fieldset style="margin-top:20px">
+        <legend>Риски</legend>
+        <p style="font-size:12px;color:var(--dim);line-height:1.6;margin:0">
+          Обратного пути нет: ФФД повышается только вверх, а прошивка с поддержкой 1.2 —
+          отдельная сборка. На время работ касса не работает. Нужна перерегистрация
+          в ЛК ФНС, которая расходует одну перерегистрацию из конечного числа у ФН.
+          Ветки печати чеков под ФФД 1.2 в программе пока нет.
+        </p>
+      </fieldset>
+      <fieldset>
+        <legend>Порядок действий</legend>
+        <ol id="ffd-steps" style="font-size:12px;color:var(--dim);line-height:1.8;margin:0;padding-left:18px"></ol>
+      </fieldset>
+      <button class="minor" onclick="loadFfd()">Обновить</button>
+    </section>
+
     <section class="panel" id="panel-wire" hidden>
       <h2>Журнал обмена с кассой<button class="panel-close" onclick="showPanel(null)">× закрыть</button></h2>
       <p style="font-size:11px;color:var(--dim);margin:8px 0">
@@ -657,6 +690,7 @@ function showPanel(p) {
   panel = (panel === p) ? null : p;   // повторный клик по той же кнопке закрывает
   syncPanes();
   if (panel === 'service') loadService();
+  if (panel === 'ffd') loadFfd();
   if (panel === 'wire') loadLog();
 }
 
@@ -670,7 +704,7 @@ function syncPanes() {
   document.querySelector('.modes').hidden = !form;
   $('m-sale').setAttribute('aria-pressed', mode === 'sale');
   $('m-corr').setAttribute('aria-pressed', mode === 'corr');
-  ['journal', 'service', 'wire', 'conn'].forEach(name => {
+  ['journal', 'service', 'ffd', 'wire', 'conn'].forEach(name => {
     $('panel-' + name).hidden = panel !== name;
   });
   document.querySelectorAll('[data-panel]').forEach(b =>
@@ -1163,8 +1197,133 @@ async function loadService(retried = false) {
     $('svc-fisc-fd').textContent = (f.fd != null) ? `№ ${f.fd} / ${f.fp}` : '—';
     $('svc-unconfirmed').textContent = s.unconfirmed;
     $('svc-unconfirmed').className = s.unconfirmed_warning ? 'warn' : '';
+    updateFfdButton(s.ffd_by_length);
   } catch (e) {
     fail('Панель обслуживания недоступна');
+  }
+}
+
+// --- кнопка «Переход на ФФД 1.2» в левой колонке ---
+// Подпись и подсветка берутся из ffd_by_length, который и так приезжает
+// в /api/service при каждой загрузке панели обслуживания — отдельного
+// запроса к кассе ради одной кнопки заводить незачем.
+
+function updateFfdButton(byLength) {
+  const btn = $('ffd-btn');
+  if (byLength === '1.1/1.2') {
+    btn.textContent = 'ФФД кассы новее программы';
+    btn.classList.add('warn');
+  } else {
+    btn.textContent = 'Переход на ФФД 1.2';
+    btn.classList.remove('warn');
+  }
+}
+
+// --- панель «Переход на ФФД 1.2» ---
+// FF0Eh читает архив отчёта о регистрации, а не измеряет что-то заново —
+// версии ФФД меняются только при перерегистрации кассы, поэтому панель
+// не опрашивается по таймеру и не грузится при старте страницы, только
+// по кнопке слева и по «Обновить» внутри самой панели.
+
+const FFD_VERDICT_CLASS = { ok: 'ok', warn: 'wait', blocked: 'err', unknown: 'wait' };
+
+function parseRuDate(s) {
+  const m = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(s || '');
+  if (!m) return null;
+  const [, d, mo, y] = m;
+  return new Date(+y, +mo - 1, +d);
+}
+function daysUntil(s) {
+  const d = parseRuDate(s);
+  if (!d) return null;
+  return Math.round((d - new Date()) / 86400000);
+}
+
+function renderFfdChecks(checks) {
+  $('ffd-checks').innerHTML = checks.map(c => `
+    <div class="gauge">
+      <dt>${esc(c.title)}</dt>
+      <dd class="${c.state === 'warn' ? 'warn' : ''}"
+          style="${c.state === 'unknown' ? 'color:var(--dim)' : ''}">${esc(c.value)}</dd>
+      ${c.note ? `<div style="font-size:11px;color:var(--dim);margin-top:3px">${esc(c.note)}</div>` : ''}
+    </div>`).join('');
+}
+
+function renderFfdSteps(s) {
+  const fnCheck = (s.checks || []).find(c => c.key === 'fn_expiry');
+  const expiry = fnCheck ? fnCheck.value : 'неизвестно';
+  const days = fnCheck ? daysUntil(fnCheck.value) : null;
+  const daysText = days === null ? '' : ` (осталось дней: ${days})`;
+  const snap = s.snapshot || {};
+  const fw = snap.sw_version
+    ? `${snap.sw_version} сборка ${snap.sw_build} от ${snap.sw_date}`
+    : 'неизвестно';
+  const steps = [
+    `Убедиться, что ФН поддерживает ФФД 1.2 и зарегистрирован. Срок действия ` +
+      `ФН у этой кассы: ${expiry}${daysText}.`,
+    'Закрыть смену.',
+    'Дождаться, пока все документы уйдут в ОФД.',
+    'Снять отчёт о состоянии расчётов — вручную, командой в программе он не заведён.',
+    `Включить в утилите Штрих-М автоматическую перерегистрацию на ФФД 1.2 и обновить ` +
+      `прошивку (сейчас установлена: ${fw}) — прошивка сама сформирует отчёт об изменении ` +
+      `параметров регистрации.`,
+    'Настроить таблицу 19 под своего ОФД.',
+    'Перерегистрироваться в личном кабинете ФНС.',
+  ];
+  $('ffd-steps').innerHTML = steps.map(t => `<li>${esc(t)}</li>`).join('');
+}
+
+async function loadFfd(retried = false) {
+  const fail = (text) => {
+    $('ffd-verdict').style.display = 'none';
+    $('ffd-unsupported').style.display = 'none';
+    $('ffd-checks').innerHTML = '';
+    $('ffd-steps').innerHTML = '';
+    $('ffd-error').textContent = text;
+    $('ffd-error').style.display = '';
+  };
+  try {
+    const r = await fetch('/api/ffd');
+    // См. пояснение в loadService(): 404 здесь значит «сервер старее
+    // интерфейса», а не «нет связи с кассой».
+    if (r.status === 404) {
+      fail('Запущенный сервер старее интерфейса: выключите и запустите кассу заново');
+      return;
+    }
+    if (!r.ok) { fail(`Сервер ответил ошибкой ${r.status}`); return; }
+    const s = await r.json();
+    if (s.busy && !s.online) {
+      if (!retried) {
+        $('ffd-error').textContent = 'Касса занята другой операцией, повторяю…';
+        $('ffd-error').style.display = '';
+        setTimeout(() => loadFfd(true), 2000);
+      } else {
+        $('ffd-error').textContent =
+          'Касса занята другой операцией. Нажмите «Обновить», когда освободится.';
+        $('ffd-error').style.display = '';
+      }
+      return;
+    }
+    if (!s.online) {
+      fail(s.error || 'Нет связи с кассой');
+      return;
+    }
+    if (s.busy) {
+      $('ffd-error').textContent =
+        'Показаны данные из последнего известного ответа: касса сейчас занята другой операцией.';
+      $('ffd-error').style.display = '';
+    } else {
+      $('ffd-error').style.display = 'none';
+    }
+    const v = s.verdict || { state: 'unknown', text: '' };
+    $('ffd-verdict').className = `msg ${FFD_VERDICT_CLASS[v.state] || 'wait'}`;
+    $('ffd-verdict').textContent = v.text;
+    $('ffd-verdict').style.display = '';
+    $('ffd-unsupported').style.display = s.unsupported ? '' : 'none';
+    renderFfdChecks(s.checks || []);
+    renderFfdSteps(s);
+  } catch (e) {
+    fail('Панель перехода на ФФД 1.2 недоступна');
   }
 }
 

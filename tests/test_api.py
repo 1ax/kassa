@@ -606,3 +606,24 @@ def test_перезапуск_на_свободной_кассе_зовёт_rest
     assert r.status_code == 200
     time.sleep(0.6)                      # перезапускаем с задержкой, чтобы ответ дошёл
     assert restarted == [True]
+
+
+# --- Готовность к ФФД 1.2 ---------------------------------------------------
+
+def test_панель_ффд_работает_на_эмуляторе(client):
+    r = client.get("/api/ffd")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["online"] is True
+    assert body["current"] == "1.05"
+    assert body["fn_max"] == "1.2"
+    assert body["kkt_max"] == "1.05"
+    assert [c["key"] for c in body["checks"]] == [
+        "ffd_current", "fn", "kkt", "fn_expiry", "shift", "ofd", "code",
+    ]
+    assert body["verdict"]["state"] != "unknown"
+
+
+def test_панель_обслуживания_содержит_ффд_по_длине(client):
+    body = client.get("/api/service").json()
+    assert body["ffd_by_length"] == "1.05"

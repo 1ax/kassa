@@ -427,3 +427,63 @@ def test_ненулевой_код_ошибки_превращается_в_ис
     with pytest.raises(shtrih.KKTError) as e:
         k.shift_params()
     assert e.value.code == 0x67
+
+
+# --- Параметр открытия ФН (FF0Eh) и версии ФФД -----------------------------
+#
+# Кадры TLV сняты с живой ККТ 25.08.2026, отчёт о регистрации №1:
+#   тег 1209 «версия ФФД»     -> B9 04 01 00 02
+#   тег 1189 «версия ФФД ККТ» -> A5 04 01 00 02
+#   тег 1190 «версия ФФД ФН»  -> A6 04 01 00 04
+
+def test_параметр_регистрации_разбирает_реальные_кадры():
+    k = kkt_with([
+        b"\xff\x0e\x00" + bytes.fromhex("b904010002"),
+        b"\xff\x0e\x00" + bytes.fromhex("a504010002"),
+        b"\xff\x0e\x00" + bytes.fromhex("a604010004"),
+    ])
+    assert k.registration_param(shtrih.TAG_FFD_VERSION) == b"\x02"
+    assert k.registration_param(shtrih.TAG_FFD_KKT) == b"\x02"
+    assert k.registration_param(shtrih.TAG_FFD_FN) == b"\x04"
+
+
+def test_ffd_versions_на_реальных_кадрах():
+    # ffd_versions() сперва находит номер отчёта перебором (report 1 отвечает,
+    # report 2 даёт 0x08), затем перечитывает три тега из найденного отчёта.
+    k = kkt_with([
+        b"\xff\x0e\x00" + bytes.fromhex("b904010002"),  # перебор: отчёт 1 отвечает
+        b"\xff\x0e\x08",                                 # перебор: отчёт 2 -- нет данных
+        b"\xff\x0e\x00" + bytes.fromhex("b904010002"),  # 1209 -> current
+        b"\xff\x0e\x00" + bytes.fromhex("a504010002"),  # 1189 -> kkt
+        b"\xff\x0e\x00" + bytes.fromhex("a604010004"),  # 1190 -> fn
+    ])
+    assert k.ffd_versions() == {"report": 1, "current": 2, "kkt": 2, "fn": 4}
+
+
+def test_параметр_регистрации_на_коде_0x08_отдаёт_none():
+    k = kkt_with([b"\xff\x0e\x08"])
+    assert k.registration_param(shtrih.TAG_FFD_VERSION) is None
+
+
+def test_параметр_регистрации_на_коде_0x37_поднимает_kkterror():
+    k = kkt_with([b"\xff\x0e\x37"])
+    with pytest.raises(shtrih.KKTError) as e:
+        k.registration_param(shtrih.TAG_FFD_VERSION)
+    assert e.value.code == 0x37
+
+
+def test_last_registration_report_останавливается_на_первом_0x08():
+    k = kkt_with([
+        b"\xff\x0e\x00" + bytes.fromhex("b904010002"),  # отчёт 1 отвечает
+        b"\xff\x0e\x08",                                 # отчёт 2 -- нет данных
+    ])
+    assert k.last_registration_report() == 1
+
+
+def test_ff0e_шлёт_номер_тега_двумя_байтами_little_endian():
+    k = kkt_with([b"\xff\x0e\x00" + bytes.fromhex("b904010002")])
+    k.registration_param(1209)
+    frame = frames_sent(k)[0]
+    assert frame[2:4] == shtrih.CMD_FN_REG_PARAM
+    # DATA = пароль(4) + номер отчёта(1) + тег(2, little-endian)
+    assert frame[-3:-1] == bytes([0xB9, 0x04])

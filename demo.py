@@ -138,10 +138,31 @@ class DemoKKT:
             "work_modes": 0,
             "fd": 1,
             "fp": 111111111,
+            "data_length": 48,
         }
 
     def unconfirmed_documents(self) -> int:
         return 0
+
+    def registration_param(self, tag: int, report: int = 1) -> bytes | None:
+        """Правдоподобная эмуляция FF0Eh: единственный отчёт №1 с тегами,
+        снятыми с живой кассы 25.08.2026; прочие отчёты — «нет данных»."""
+        if report != 1:
+            return None
+        values = {
+            shtrih.TAG_FFD_VERSION: 2,   # ФФД 1.05
+            shtrih.TAG_FFD_KKT: 2,       # ККТ умеет максимум 1.05
+            shtrih.TAG_FFD_FN: 4,        # ФН умеет 1.2
+        }
+        if tag not in values:
+            return None
+        return bytes([values[tag]])
+
+    def last_registration_report(self, limit: int = 20) -> int:
+        return 1
+
+    def ffd_versions(self) -> dict:
+        return {"report": 1, "current": 2, "kkt": 2, "fn": 4}
 
     # -- время и дата --
 
