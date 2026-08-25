@@ -1019,7 +1019,7 @@ async function loadLog() {
 const SVC_FIELDS = ['svc-expiry', 'svc-version', 'svc-fisc-at', 'svc-reg',
                      'svc-sno', 'svc-fisc-fd', 'svc-unconfirmed'];
 
-async function loadService() {
+async function loadService(retried = false) {
   const fail = (text) => {
     SVC_FIELDS.forEach(id => { $(id).textContent = '—'; $(id).className = ''; });
     $('svc-error').textContent = text;
@@ -1048,11 +1048,36 @@ async function loadService() {
       $('svc-rate').textContent =
         `${dir} на ${perDay} с/сутки · замеры за ${rateDays} сут, точек: ${s.clock_drift_rate_points}`;
     }
+    if (s.busy && !s.online) {
+      // Касса занята, а данных нет вовсе (свежепоставленный сервер, кэш
+      // пуст) — не грубим fail()-ом и не затираем уже показанные значения.
+      // Один автоповтор через 2 секунды: обычная гонка с опросом статуса
+      // при загрузке страницы рассасывается сама.
+      if (!retried) {
+        $('svc-error').textContent = 'Касса занята другой операцией, повторяю…';
+        $('svc-error').style.display = '';
+        setTimeout(() => loadService(true), 2000);
+      } else {
+        $('svc-error').textContent =
+          'Касса занята другой операцией. Нажмите «Обновить», когда освободится.';
+        $('svc-error').style.display = '';
+      }
+      return;
+    }
     if (!s.online) {
       fail(s.error || 'Нет связи с кассой');
       return;
     }
-    $('svc-error').style.display = 'none';
+    // s.busy вместе с online: true — сервер отдал последний известный ответ,
+    // пока касса занята печатью. Данные показываем как обычно, но поясняем
+    // их источник; автоповтор тут не нужен — на экране уже есть что показать.
+    if (s.busy) {
+      $('svc-error').textContent =
+        'Показаны данные из последнего известного ответа: касса сейчас занята другой операцией.';
+      $('svc-error').style.display = '';
+    } else {
+      $('svc-error').style.display = 'none';
+    }
     const days = s.fn_expiry_days;
     $('svc-expiry').textContent = (days === null || days === undefined)
       ? s.fn_expiry

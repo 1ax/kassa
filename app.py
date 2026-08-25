@@ -75,6 +75,13 @@ STALE_TTL = 5.0
 SERVICE_CACHE: dict = {"at": 0.0, "value": None}
 SERVICE_TTL = 60.0
 
+# Панель открывает человек, а не таймер, поэтому она вправе подождать замок,
+# в отличие от приборной панели (там wait=0 — своё осознанное решение, не
+# трогать). 15 секунд — компромисс: обычная гонка с опросом статуса при
+# загрузке страницы (доли секунды) рассасывается сама, а на печатающей
+# операции (до 90 секунд) панель честно сдаётся, а не висит.
+SERVICE_WAIT = 15.0
+
 # Журнал последнего обмена с кассой — для разбора полётов в альфе.
 LAST_EXCHANGE: list[str] = []
 
@@ -608,7 +615,7 @@ def service():
         }
 
     try:
-        value = with_kkt(read, wait=0, record=False)
+        value = with_kkt(read, wait=SERVICE_WAIT, record=False)
     except Busy:
         if cached is not None:
             return {**cached, "busy": True}

@@ -6,6 +6,7 @@
 """
 
 import json
+import threading
 import time
 
 import pytest
@@ -286,6 +287,59 @@ def test_панель_обслуживания_работает_на_эмуля�
     assert body["online"] is True
     assert body["fn_expiry_warning"] is False
     assert body["unconfirmed_warning"] is False
+
+
+def test_панель_обслуживания_переживает_короткую_занятость(client):
+    """
+    Гонка при загрузке страницы: опрос статуса на мгновение забирает замок
+    раньше панели обслуживания. Панель должна дождаться, а не сдаться сразу.
+    """
+    kassa_app.SERVICE_CACHE["value"] = None
+    kassa_app.SERVICE_CACHE["at"] = 0.0
+
+    def hold():
+        kassa_app.KKT_LOCK.acquire()
+        time.sleep(0.3)
+        kassa_app.KKT_LOCK.release()
+
+    t = threading.Thread(target=hold)
+    t.start()
+    time.sleep(0.05)                     # дать потоку захватить замок первым
+    try:
+        r = client.get("/api/service")
+    finally:
+        t.join()
+    assert r.status_code == 200
+    assert r.json()["online"] is True
+
+
+def test_панель_обслуживания_честно_отказывает_при_долгой_занятости(client, monkeypatch):
+    """Печатающая операция (до 90 секунд) — панель не висит, а сдаётся."""
+    monkeypatch.setattr(kassa_app, "SERVICE_WAIT", 0.2)
+    kassa_app.SERVICE_CACHE["value"] = None
+    kassa_app.SERVICE_CACHE["at"] = 0.0
+
+    def hold():
+        kassa_app.KKT_LOCK.acquire()
+        try:
+            time.sleep(1.0)
+        finally:
+            kassa_app.KKT_LOCK.release()
+
+    t = threading.Thread(target=hold)
+    t.start()
+    time.sleep(0.05)                     # дать потоку захватить замок первым
+    try:
+        r = client.get("/api/service")
+    finally:
+        t.join()
+    assert r.status_code == 200
+    body = r.json()
+    assert body["busy"] is True
+    assert body["online"] is False
+    assert "clock_drift_rate" in body
+    assert "clock_drift_rate_days" in body
+    assert "clock_drift_rate_points" in body
 
 
 # --- Сверка часов (21h/22h/23h) -------------------------------------------
