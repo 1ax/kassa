@@ -78,13 +78,40 @@ running() {
     | grep -q '"app":"kassa"'
 }
 
-if ! running; then
+start_server() {
   cd "$PROJECT"
   nohup "$PROJECT/.venv/bin/python" app.py --port "$PORT" --strict-port >>"$LOG" 2>&1 &
   for _ in $(seq 1 40); do            # ждём до 20 секунд
     running && break
     sleep 0.5
   done
+}
+
+stale_server() {
+  # Нет поля version = сборка старше той, где вообще появилась эта проверка —
+  # такой сервер точно устарел, даже если сам он об этом не знает.
+  echo "$1" | grep -q '"stale":true' || ! echo "$1" | grep -q '"version"'
+}
+
+if running; then
+  # Сервер уже отвечает — но код в его памяти мог устареть (например, его
+  # никто не перезапускал после git pull). Спрашиваем у него самого.
+  ping_body="$(curl --noproxy '*' --max-time 1 "$URL/api/ping" 2>/dev/null || true)"
+  if stale_server "$ping_body"; then
+    if curl -fsS --noproxy '*' --max-time 2 -X POST "$URL/api/quit" >/dev/null 2>&1; then
+      # /api/quit сам откажется гасить кассу посреди обмена (HTTP 409),
+      # тогда curl -f вернёт ненулевой код и мы сюда не попадём.
+      for _ in $(seq 1 20); do        # ждём до 10 секунд освобождения порта
+        running || break
+        sleep 0.5
+      done
+      start_server
+    else
+      osascript -e "display dialog \"Запущен старый сервер, а касса сейчас занята операцией — перезапуск отложен. Повторите позже кнопкой «Перезапустить кассу» в интерфейсе.\" with title \"Касса\" buttons {\"Ладно\"} default button 1 with icon caution" >/dev/null 2>&1
+    fi
+  fi
+else
+  start_server
 fi
 
 running || fail "Касса не поднялась на порту $PORT. Последние строки kassa.log:

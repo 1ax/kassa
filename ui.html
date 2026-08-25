@@ -258,6 +258,10 @@
 </head>
 <body>
 <div class="demo-bar" id="demo-bar" hidden>Демо-режим — касса эмулируется, ничего не печатается</div>
+<div class="msg err" id="stale" hidden style="margin:0;border-radius:0;text-align:center">
+  Запущен старый сервер, код на диске новее. Печать и сверка часов заблокированы до перезапуска.
+  <button class="minor" onclick="restartServer()">Перезапустить кассу</button>
+</div>
 <div class="shell">
 
   <!-- приборы -->
@@ -791,6 +795,26 @@ function quitServer() {
   });
 }
 
+function restartServer() {
+  ask('Перезапустить кассу?',
+      'Сервер перезапустится, страница перезагрузится сама.', '', 'Перезапустить', async () => {
+    try {
+      await post('/api/restart');
+    } catch (e) { say(e.message, 'err'); return; }
+    stopPolling();
+    for (let i = 0; i < 40; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      try {
+        const r = await fetch('/api/ping');
+        if (r.ok) { location.reload(); return; }
+      } catch (e) { /* сервер ещё перезапускается — это ожидаемо */ }
+    }
+    say('Касса не поднялась за 20 секунд. Откройте её иконкой из Программ, ' +
+        'подробности — в kassa.log.', 'err');
+    status(); startPolling();
+  });
+}
+
 function closeShift() {
   ask('Закрыть смену?', 'Касса напечатает Z-отчёт с гашением.', '', 'Закрыть смену',
       () => act('/api/shift/close', 'Смена закрыта, Z-отчёт напечатан'));
@@ -897,6 +921,7 @@ async function status() {
     const s = await (await fetch('/api/status')).json();
     const lamp = $('lamp');
     $('demo-bar').hidden = !s.demo;
+    $('stale').hidden = !s.stale;
     if (!s.online) {
       lamp.className = 'lamp off';
       $('link').textContent = s.busy ? 'касса занята'

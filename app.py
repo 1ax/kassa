@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import json
 import os
 import socket
+import sys
 import threading
 import time
 from datetime import date, datetime
@@ -31,6 +33,10 @@ import shtrih
 BASE = Path(__file__).parent
 CONFIG_PATH = BASE / "config.json"
 CLOCK_LOG = BASE / "clock.log"
+
+# Исходники, реально загруженные в память процесса. ui.html сюда НЕ входит:
+# он читается с диска на каждый запрос (см. index()) и устареть не может.
+SOURCE_FILES = (BASE / "app.py", BASE / "shtrih.py", BASE / "demo.py")
 
 # Заготовка на случай, если config.json ещё нет и создать его не удалось.
 # Адрес конкретной кассы живёт в config.json, а не здесь: держать его в коде —
@@ -58,6 +64,12 @@ KKT_LOCK = threading.Lock()
 STATUS_CACHE: dict = {"at": 0.0, "value": None}
 STATUS_TTL = 2.0
 
+# Устарел ли код в памяти процесса относительно исходников на диске. Опрос
+# приборной панели идёт раз в 5 секунд — кэшируем, чтобы не читать три файла
+# на каждый тик.
+_STALE_CACHE: dict = {"at": 0.0, "value": False}
+STALE_TTL = 5.0
+
 # Панель обслуживания опрашивается вручную (загрузка страницы + кнопка), а не
 # по таймеру, поэтому кэш можно держать дольше, чем у приборной панели.
 SERVICE_CACHE: dict = {"at": 0.0, "value": None}
@@ -67,6 +79,47 @@ SERVICE_TTL = 60.0
 LAST_EXCHANGE: list[str] = []
 
 DEMO = False
+
+
+def _sources_digest() -> str:
+    """
+    Отпечаток исходников (SOURCE_FILES) в их текущем виде на диске.
+
+    Любой сбой чтения (файл удалили, нет прав) — не повод падать: молча
+    возвращаем "" («версия неизвестна»), а не роняем /api/ping или /api/status.
+    """
+    h = hashlib.sha256()
+    try:
+        for path in SOURCE_FILES:
+            h.update(path.read_bytes())
+    except OSError:
+        return ""
+    return h.hexdigest()
+
+
+# Версия кода, реально загруженного в память этого процесса — считается один
+# раз при импорте и больше не меняется, в отличие от _sources_digest(),
+# которая каждый раз читает файлы заново.
+CODE_VERSION = _sources_digest()
+
+
+def is_stale() -> bool:
+    """
+    Устарел ли код в памяти процесса относительно исходников на диске —
+    например, потому что лаунчер не перезапустил сервер, увидев, что порт
+    уже отвечает.
+
+    Пустой дайджест с любой стороны — «не знаем»: лучше не блокировать кассу
+    зря, чем заблокировать её на ровном месте из-за нечитаемого файла.
+    """
+    now = time.monotonic()
+    if now - _STALE_CACHE["at"] < STALE_TTL:
+        return _STALE_CACHE["value"]
+    current = _sources_digest()
+    stale = bool(CODE_VERSION) and bool(current) and current != CODE_VERSION
+    _STALE_CACHE["value"] = stale
+    _STALE_CACHE["at"] = now
+    return stale
 
 
 # --- Конфигурация --------------------------------------------------------
@@ -402,9 +455,13 @@ def ping():
 
     Лаунчер стучится сюда перед стартом: если на порту уже наша касса —
     просто открыть браузер, если чужой сервис — сказать об этом, а не
-    молча уехать на другой порт и сломать закладку.
+    молча уехать на другой порт и сломать закладку. Поля version/stale —
+    чтобы лаунчер узнал устаревший сервер и перезапустил его сам.
     """
-    return {"app": "kassa", "pid": os.getpid(), "demo": DEMO}
+    return {
+        "app": "kassa", "pid": os.getpid(), "demo": DEMO,
+        "version": CODE_VERSION[:12], "stale": is_stale(),
+    }
 
 
 @app.get("/api/config")
@@ -438,14 +495,15 @@ def status():
       * свежий ответ держим пару секунд, чтобы не долбить кассу пятью
         командами на каждый тик.
     """
+    stale = is_stale()
     if not DEMO and not load_config()["host"].strip():
         return {"online": False, "demo": False, "no_host": True,
-                "error": "Адрес кассы не задан"}
+                "error": "Адрес кассы не задан", "stale": stale}
 
     now = time.monotonic()
     cached = STATUS_CACHE["value"]
     if cached is not None and now - STATUS_CACHE["at"] < STATUS_TTL:
-        return cached
+        return {**cached, "stale": stale}
 
     def read(k):
         short = k.short_status()
@@ -476,9 +534,9 @@ def status():
         value = with_kkt(read, wait=0, record=False)
     except Busy:
         if cached is not None:
-            return {**cached, "busy": True}
+            return {**cached, "busy": True, "stale": stale}
         return {"online": False, "busy": True, "demo": DEMO,
-                "error": "Касса занята другой операцией"}
+                "error": "Касса занята другой операцией", "stale": stale}
     except (OSError, socket.timeout, shtrih.ProtocolError) as exc:
         value = {"online": False, "demo": DEMO, "error": str(exc)}
     except Exception as exc:
@@ -493,7 +551,7 @@ def status():
             _maybe_log_drift_sample(value["datetime"])
         except Exception:
             pass
-    return value
+    return {**value, "stale": stale}
 
 
 def days_left(expiry: str, today: date | None = None) -> int | None:
@@ -605,10 +663,51 @@ def quit_server():
     return {"ok": True, "message": "Сервер остановлен"}
 
 
+def restart() -> None:
+    """Вынесено отдельно, чтобы тест мог подменить и не перезапустить сам себя."""
+    os.chdir(BASE)
+    os.execv(sys.executable, [sys.executable, *sys.argv])
+
+
+@app.post("/api/restart")
+def restart_server():
+    """
+    Перезапустить сервер по кнопке в интерфейсе — на устаревшем сервере
+    (код в памяти старше исходников на диске) или по желанию владельца.
+    Пока идёт обмен с кассой — отказываемся: обрывать печать чека
+    перезапуском нельзя.
+    """
+    if not KKT_LOCK.acquire(blocking=False):
+        raise HTTPException(409, "Касса занята операцией, подождите её окончания")
+    KKT_LOCK.release()
+
+    def do_restart():
+        time.sleep(0.3)          # даём ответу дойти до браузера
+        restart()
+
+    threading.Thread(target=do_restart, daemon=True).start()
+    return {"ok": True, "message": "Сервер перезапускается"}
+
+
 @app.get("/api/log")
 def protocol_log():
     """Журнал последнего обмена — чтобы было что показать при разборе сбоя."""
     return {"lines": LAST_EXCHANGE}
+
+
+def _refuse_if_stale() -> None:
+    """
+    Не пускать печатающую операцию на сервер, чьи исходники в памяти
+    устарели относительно диска: отдаём внятную ошибку с указанием кнопки
+    перезапуска вместо того, чтобы выполнить операцию кодом, которого уже
+    никто не видит.
+    """
+    if is_stale():
+        raise HTTPException(
+            409,
+            "Запущен старый сервер, код на диске новее. "
+            "Нажмите «Перезапустить кассу» вверху страницы.",
+        )
 
 
 def _simple(action, ok_text: str):
@@ -624,21 +723,30 @@ def _simple(action, ok_text: str):
 
 @app.post("/api/shift/open")
 def open_shift():
+    _refuse_if_stale()
     return _simple(lambda k: k.open_shift(), "Смена открыта")
 
 
 @app.post("/api/shift/close")
 def close_shift():
+    # НЕ вызывать _refuse_if_stale(): если код на диске обновится при
+    # открытой смене, заблокированный Z-отчёт через 24 часа уведёт кассу
+    # в режим 3 (касса откажется работать вообще). Это аварийный выход,
+    # доступный всегда — независимо от версии кода в памяти процесса.
     return _simple(lambda k: k.z_report(), "Смена закрыта, Z-отчёт напечатан")
 
 
 @app.post("/api/report/x")
 def x_report():
+    _refuse_if_stale()
     return _simple(lambda k: k.x_report(), "X-отчёт напечатан")
 
 
 @app.post("/api/receipt/cancel")
 def cancel_receipt():
+    # НЕ вызывать _refuse_if_stale(): заблокированное аннулирование оставит
+    # висеть открытый чек, который потом будет нечем закрыть. Это аварийный
+    # выход, доступный всегда — независимо от версии кода в памяти процесса.
     return _simple(lambda k: k.cancel_receipt(), "Чек аннулирован")
 
 
@@ -714,6 +822,7 @@ def _clock_result(was: datetime, now: datetime, message: str) -> dict:
 @app.post("/api/clock/time")
 def clock_time():
     """Сверить время кассы (21h) с часами этого компьютера."""
+    _refuse_if_stale()
     STATUS_CACHE["at"] = 0.0
     try:
         def run(k):
@@ -744,6 +853,7 @@ def clock_time():
 @app.post("/api/clock/date")
 def clock_date():
     """Сверить дату кассы (22h+23h) с часами этого компьютера."""
+    _refuse_if_stale()
     STATUS_CACHE["at"] = 0.0
     try:
         def run(k):
@@ -775,6 +885,7 @@ def clock_date():
 
 @app.post("/api/receipt")
 def punch_receipt(req: ReceiptRequest):
+    _refuse_if_stale()
     if not req.positions:
         raise HTTPException(400, "В чеке нет ни одной позиции")
     if any(not p.name.strip() for p in req.positions):
@@ -846,6 +957,7 @@ def punch_receipt(req: ReceiptRequest):
 
 @app.post("/api/correction")
 def punch_correction(req: CorrectionRequest):
+    _refuse_if_stale()
     if req.op_type not in (shtrih.OP_INCOME, shtrih.OP_EXPENSE):
         raise HTTPException(
             400,

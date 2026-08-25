@@ -22,6 +22,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(kassa_app, "CLOCK_LOG", tmp_path / "clock.log")
     kassa_app.STATUS_CACHE["value"] = None
     kassa_app.STATUS_CACHE["at"] = 0.0
+    kassa_app._STALE_CACHE["at"] = 0.0
+    kassa_app._STALE_CACHE["value"] = False
     kassa_app.CLOCK_LOG_CACHE["last_at"] = None
     kassa_app.CLOCK_LOG_CACHE["initialized"] = False
     demo.DemoKKT.state.update(
@@ -480,3 +482,67 @@ def test_недоступный_журнал_не_ломает_статус(clie
     r = client.get("/api/status")
     assert r.status_code == 200
     assert r.json()["online"] is True
+
+
+# --- Устаревший сервер (версия кода в памяти vs исходники на диске) -------
+
+def test_ping_на_свежем_коде_не_устарел(client):
+    body = client.get("/api/ping").json()
+    assert body["stale"] is False
+    assert body["version"]
+
+
+def test_is_stale_true_при_подменённой_версии(client, monkeypatch):
+    monkeypatch.setattr(kassa_app, "CODE_VERSION", "заведомо-другая-строка")
+    assert kassa_app.is_stale() is True
+
+
+def test_статус_отдаёт_stale_и_свежим_и_из_кэша(client):
+    first = client.get("/api/status").json()
+    assert "stale" in first
+    assert first["stale"] is False
+    second = client.get("/api/status").json()
+    assert "stale" in second
+    assert second["stale"] is False
+
+
+def test_устаревший_сервер_отбивает_печать_чека(client, monkeypatch):
+    client.post("/api/shift/open")
+    monkeypatch.setattr(kassa_app, "CODE_VERSION", "заведомо-другая-строка")
+    kassa_app._STALE_CACHE["at"] = 0.0    # открытие смены уже закэшировало is_stale()
+    r = client.post("/api/receipt", json={
+        "positions": [{"name": "Стоянка", "qty": 1, "price": 10}], "cash": 10})
+    assert r.status_code == 409
+    assert "стар" in r.json()["detail"].lower()
+
+
+def test_устаревший_сервер_отбивает_открытие_смены_и_сверку_времени(client, monkeypatch):
+    monkeypatch.setattr(kassa_app, "CODE_VERSION", "заведомо-другая-строка")
+    assert client.post("/api/shift/open").status_code == 409
+    assert client.post("/api/clock/time").status_code == 409
+
+
+def test_устаревший_сервер_не_блокирует_z_отчёт_и_аннулирование(client, monkeypatch):
+    """Z-отчёт и аннулирование чека — аварийный выход, доступный всегда."""
+    monkeypatch.setattr(kassa_app, "CODE_VERSION", "заведомо-другая-строка")
+    assert client.post("/api/shift/close").status_code != 409
+    assert client.post("/api/receipt/cancel").status_code != 409
+
+
+def test_перезапуск_отказывает_при_занятой_кассе(client):
+    assert kassa_app.KKT_LOCK.acquire(blocking=False)
+    try:
+        r = client.post("/api/restart")
+        assert r.status_code == 409
+        assert "занята" in r.json()["detail"]
+    finally:
+        kassa_app.KKT_LOCK.release()
+
+
+def test_перезапуск_на_свободной_кассе_зовёт_restart(client, monkeypatch):
+    restarted = []
+    monkeypatch.setattr(kassa_app, "restart", lambda: restarted.append(True))
+    r = client.post("/api/restart")
+    assert r.status_code == 200
+    time.sleep(0.6)                      # перезапускаем с задержкой, чтобы ответ дошёл
+    assert restarted == [True]
