@@ -189,6 +189,88 @@ def test_коррекция_ff4a_имеет_длину_69_байт():
     assert len(frame) == 72
 
 
+# --- Отчёт о состоянии расчётов (FF37h/FF38h) -----------------------------
+
+def test_начало_отчёта_о_состоянии_расчётов_ff37_имеет_длину_6_байт():
+    k = shtrih.KKT("stub", 0, admin_password=88)
+    k._sock = FakeSocket([b"\xff\x37\x00", b"\xff\x38\x00" + bytes(15)])
+    k.settlement_report()
+    frame = frames_sent(k)[0]
+    assert frame[2:4] == shtrih.CMD_SETTLEMENT_BEGIN
+    assert frame[1] == 6                # CMD(2) + пароль(4)
+    assert len(frame) == 9
+    assert frame[4:8] == shtrih.password(88)
+
+
+def test_формирование_отчёта_о_состоянии_расчётов_ff38_имеет_длину_6_байт():
+    k = kkt_with([b"\xff\x37\x00", b"\xff\x38\x00" + bytes(15)])
+    k.settlement_report()
+    frame = frames_sent(k)[1]
+    assert frame[2:4] == shtrih.CMD_SETTLEMENT_REPORT
+    assert frame[1] == 6                # CMD(2) + пароль(4)
+    assert len(frame) == 9
+
+
+def test_отчёт_о_состоянии_расчётов_уходит_ff37_затем_ff38():
+    k = kkt_with([b"\xff\x37\x00", b"\xff\x38\x00" + bytes(15)])
+    k.settlement_report()
+    frames = frames_sent(k)
+    assert len(frames) == 2
+    assert frames[0][2:4] == shtrih.CMD_SETTLEMENT_BEGIN
+    assert frames[1][2:4] == shtrih.CMD_SETTLEMENT_REPORT
+
+
+def test_разбор_базового_ответа_отчёта_о_состоянии_расчётов():
+    # Дату собираем так, чтобы порядок байтов был виден: три байта кадра
+    # 26 08 1A в порядке ГГ ММ ДД дают 26.08.2038 (год 0x26=38, день 0x1A=26).
+    # Позвать тут _bcd_date (ДД ММ ГГ) вместо _ymd_date дало бы 38.08.2026 —
+    # другую строку, так что подмена функции тест завалит.
+    date_bytes = bytes.fromhex("26081a")
+    data = (
+        (29).to_bytes(4, "little")
+        + (3000000029).to_bytes(4, "little")
+        + (2).to_bytes(4, "little")
+        + date_bytes
+    )
+    assert len(data) == 15
+    k = kkt_with([b"\xff\x37\x00", b"\xff\x38\x00" + data])
+    r = k.settlement_report()
+    assert r["fd_number"] == 29
+    assert r["fiscal_sign"] == 3000000029
+    assert r["unconfirmed"] == 2
+    assert r["first_unconfirmed_date"] == "26.08.2038"
+
+
+def test_расширенный_ответ_отчёта_о_состоянии_расчётов_игнорирует_хвост():
+    date_bytes = bytes.fromhex("26081a")
+    data = (
+        (29).to_bytes(4, "little")
+        + (3000000029).to_bytes(4, "little")
+        + (2).to_bytes(4, "little")
+        + date_bytes
+        + bytes(5)                       # DATE_TIME, здесь не разбирается
+    )
+    assert len(data) == 20
+    k = kkt_with([b"\xff\x37\x00", b"\xff\x38\x00" + data])
+    r = k.settlement_report()
+    assert r["fd_number"] == 29
+    assert r["fiscal_sign"] == 3000000029
+    assert r["unconfirmed"] == 2
+    assert r["first_unconfirmed_date"] == "26.08.2038"
+
+
+def test_нулевая_дата_неподтверждённого_документа_даёт_none():
+    data = (
+        (29).to_bytes(4, "little")
+        + (3000000029).to_bytes(4, "little")
+        + (0).to_bytes(4, "little")
+        + bytes(3)
+    )
+    k = kkt_with([b"\xff\x37\x00", b"\xff\x38\x00" + data])
+    r = k.settlement_report()
+    assert r["first_unconfirmed_date"] is None
+
+
 def test_позиция_чека_уходит_под_паролем_оператора():
     k = shtrih.KKT("stub", 0, operator_password=77, admin_password=88)
     k._sock = FakeSocket([b"\xff\x46\x00"])

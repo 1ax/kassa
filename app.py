@@ -1225,6 +1225,30 @@ def x_report():
     return _simple(lambda k: k.x_report(), "X-отчёт напечатан")
 
 
+@app.post("/api/report/settlement")
+def settlement_report():
+    """
+    Отчёт о состоянии расчётов (FF37h/FF38h) — печатает фискальный документ.
+
+    Не через _simple(): он выбрасывает ответ кассы, а тут нужны номер ФД
+    и фискальный признак. Версия ФФД тут ни при чём — это не чек, поэтому
+    _refuse_if_ffd_mismatch не зовём.
+    """
+    _refuse_if_stale()
+    STATUS_CACHE["at"] = 0.0
+    try:
+        result = with_kkt(lambda k: k.settlement_report())
+        # Отчёт меняет номер последнего ФД и число документов без квитанции —
+        # ровно то, что показывает панель обслуживания, и живёт по своему TTL.
+        SERVICE_CACHE["value"] = None
+        SERVICE_CACHE["at"] = None
+        return {"ok": True, "message": "Отчёт о состоянии расчётов напечатан", **result}
+    except Exception as exc:
+        raise _fail(exc)
+    finally:
+        STATUS_CACHE["at"] = 0.0
+
+
 @app.post("/api/receipt/cancel")
 def cancel_receipt():
     # НЕ вызывать _refuse_if_stale(): заблокированное аннулирование оставит

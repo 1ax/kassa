@@ -270,6 +270,15 @@ class DemoKKT:
         self.state["last_fd"] += 1
         self._note("напечатан Z-отчёт, смена закрыта")
 
+    def settlement_report(self) -> dict:
+        # Смену не трогаем: отчёт о состоянии расчётов её не закрывает.
+        self.state["last_fd"] += 1
+        self._note("напечатан отчёт о состоянии расчётов")
+        return {"fd_number": self.state["last_fd"],
+                "fiscal_sign": 3000000000 + self.state["last_fd"],
+                "unconfirmed": 0,
+                "first_unconfirmed_date": None}
+
     # -- чек --
 
     def open_receipt(self, doc_type: int = shtrih.DOC_SALE):

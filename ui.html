@@ -527,8 +527,10 @@
       <h2>Обслуживание<button class="panel-close" onclick="showPanel(null)">× закрыть</button></h2>
       <p style="font-size:11px;color:var(--dim);line-height:1.5;margin:8px 0">
         Служебные данные ФН: срок действия, версия, итоги фискализации,
-        очередь документов без квитанции ОФД. Читающие команды, ничего не печатают.
-        Сверка часов ничего не печатает, но состояние кассы меняет.
+        очередь документов без квитанции ОФД. Большинство команд панели —
+        читающие, ничего не печатают. Сверка часов ничего не печатает, но
+        состояние кассы меняет. Отчёт о состоянии расчётов печатает
+        фискальный документ и отправляет его в ОФД.
       </p>
       <dl style="margin:12px 0 0">
         <div class="gauge"><dt>Срок действия ФН</dt><dd id="svc-expiry">—</dd></div>
@@ -558,6 +560,7 @@
       <button class="minor" onclick="loadService()">Обновить</button>
       <button class="minor" onclick="confirmClockTime()">Сверить время</button>
       <button class="minor" onclick="confirmClockDate()">Сверить дату</button>
+      <button class="minor" onclick="confirmSettlementReport()">Отчёт о состоянии расчётов</button>
     </section>
 
     <section class="panel" id="panel-ffd" hidden>
@@ -1112,6 +1115,20 @@ function confirmClockDate() {
       '', 'Сверить дату', () => act('/api/clock/date', 'Дата кассы сверена'));
 }
 
+function confirmSettlementReport() {
+  ask('Отчёт о состоянии расчётов?',
+      'Касса напечатает фискальный документ и отправит его в ОФД. Отменить нельзя.',
+      '', 'Сформировать', () => guard('Касса печатает отчёт…', _sendSettlementReport));
+}
+async function _sendSettlementReport() {
+  try {
+    const r = await post('/api/report/settlement');
+    say(`Отчёт о состоянии расчётов напечатан. ФД № ${r.fd_number}, ` +
+        `фискальный признак ${r.fiscal_sign}`, 'ok');
+    status(); loadLog(); loadService();
+  } catch (e) { say(e.message, 'err'); }
+}
+
 function say(text, kind) {
   $('msg').innerHTML = `<div class="msg ${kind}">${esc(text)}</div>`;
   if (kind === 'ok') setTimeout(() => { $('msg').innerHTML = ''; }, 9000);
@@ -1474,7 +1491,8 @@ function renderFfdSteps(s) {
       `ФН у этой кассы: ${expiry}${daysText}.`,
     'Закрыть смену.',
     'Дождаться, пока все документы уйдут в ОФД.',
-    'Снять отчёт о состоянии расчётов — вручную, командой в программе он не заведён.',
+    'Снять отчёт о состоянии расчётов — кнопкой «Отчёт о состоянии расчётов» ' +
+      'на панели обслуживания.',
     `Включить в утилите Штрих-М автоматическую перерегистрацию на ФФД 1.2 и обновить ` +
       `прошивку (сейчас установлена: ${fw}) — прошивка сама сформирует отчёт об изменении ` +
       `параметров регистрации.`,

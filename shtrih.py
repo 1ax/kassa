@@ -66,6 +66,8 @@ CMD_SEND_TLV = b"\xff\x0c"       # Передать произвольную TLV
 # но на прошивке C1/62922 не поддерживается — отвечает ошибкой 0x37.
 CMD_FN_REG_PARAM = b"\xff\x0e"
 CMD_CORRECTION_BEGIN = b"\xff\x35"   # Начать формирование чека коррекции
+CMD_SETTLEMENT_BEGIN = b"\xff\x37"    # Начать формирование отчёта о состоянии расчётов
+CMD_SETTLEMENT_REPORT = b"\xff\x38"   # Сформировать отчёт о состоянии расчётов
 CMD_OFD_STATUS = b"\xff\x39"     # Статус информационного обмена с ОФД
 CMD_UNCONFIRMED = b"\xff\x3f"    # Запрос количества ФД без квитанции ОФД
 CMD_SHIFT_PARAMS = b"\xff\x40"   # Запрос параметров текущей смены
@@ -366,6 +368,18 @@ def lrc(payload: bytes) -> int:
 def _bcd_date(b: bytes) -> str:
     """3 байта ДД ММ ГГ -> «ДД.ММ.20ГГ»."""
     return f"{b[0]:02d}.{b[1]:02d}.{2000 + b[2]}"
+
+
+def _ymd_date(b: bytes) -> str:
+    """
+    3 байта ГГ ММ ДД -> «ДД.ММ.20ГГ».
+
+    Порядок ОБРАТНЫЙ по отношению к _bcd_date (там ДД ММ ГГ). Источник —
+    спецификация v.1.18, ответ FF38h «Отчёт о состоянии расчётов», поле
+    «Дата первого неподтверждённого документа». Звать здесь _bcd_date
+    молча покажет чужую дату — этим уже теряли смещения в других полях.
+    """
+    return f"{b[2]:02d}.{b[1]:02d}.{2000 + b[0]}"
 
 
 def _clock(b: bytes) -> str:
@@ -893,6 +907,35 @@ class KKT:
         return self.execute(
             CMD_Z_REPORT, password(self.admin_password), timeout=PRINTING_TIMEOUT
         )
+
+    def settlement_report(self) -> dict:
+        """
+        Команды FF37h (начать) + FF38h (сформировать) — отчёт о состоянии расчётов.
+
+        FF38h ПЕЧАТАЕТ фискальный документ и отправляет его в ОФД — как и
+        X/Z-отчёты, отменить нельзя.
+
+        Разбираем по фактической длине ответа, а не по ожидаемой: базовый
+        ответ несёт 15 байт данных, расширенный (при включённой настройке
+        «РАСШИР. ОТВ. НА КОМАНДЫ ФОРМ. ФД») — 20, с добавленными в хвост
+        5 байтами DATE_TIME, которые здесь не разбираются и отбрасываются.
+        Живая касса этого семейства уже дважды (FF03h, FF09h) отвечала не
+        тем числом байт, что обещает спецификация.
+        """
+        self.execute(CMD_SETTLEMENT_BEGIN, password(self.admin_password))
+        r = self.execute(
+            CMD_SETTLEMENT_REPORT, password(self.admin_password), timeout=PRINTING_TIMEOUT
+        )
+        d = r.data
+        date_bytes = d[12:15]
+        return {
+            "fd_number": int.from_bytes(d[0:4], "little"),
+            "fiscal_sign": int.from_bytes(d[4:8], "little"),
+            "unconfirmed": int.from_bytes(d[8:12], "little"),
+            "first_unconfirmed_date": (
+                None if date_bytes == b"\x00\x00\x00" else _ymd_date(date_bytes)
+            ),
+        }
 
     # -- чек --
 

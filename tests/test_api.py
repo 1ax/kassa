@@ -893,6 +893,15 @@ def test_ффд_1_2_не_блокирует_смену_и_х_отчёт_и_ан�
     assert client.post("/api/shift/close").status_code == 200
 
 
+def test_отчёт_о_состоянии_расчётов_отдаёт_фд_и_фискальный_признак(client):
+    r = client.post("/api/report/settlement")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["fd_number"]
+    assert body["fiscal_sign"]
+
+
 def test_неизвестная_ффд_не_блокирует_печать(client):
     """Версию определить не удалось вовсе — печатаем как раньше (решение владельца)."""
     demo.DemoKKT.state["ffd"] = None
