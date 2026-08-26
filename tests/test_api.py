@@ -889,8 +889,8 @@ def test_api_ffd_отдаёт_чек_лист_готовности_програ�
     body = client.get("/api/ffd").json()
     steps = body["steps"]
     assert [s["key"] for s in steps] == [
-        "registry", "code", "subscription", "shift", "ofd",
-        "firmware", "settlement", "reregister", "lk_fns", "trial",
+        "registry", "code", "subscription", "keys", "driver", "shift", "ofd",
+        "firmware", "settlement", "reregister", "table19", "lk_fns", "trial",
     ]
 
 
@@ -967,6 +967,46 @@ def test_api_ffd_subscription_settlement_reregister_trial_всегда_manual(cl
         assert steps["settlement"]["state"] == "manual"
         assert steps["reregister"]["state"] == "manual"
         assert steps["trial"]["state"] == "manual"
+
+
+def test_api_ffd_keys_на_эмуляторе_todo_без_ключей(client):
+    """Эмулятор держит в таблице 23 поле 11 прочерки — как касса без ключей."""
+    body = client.get("/api/ffd").json()
+    keys_step = next(s for s in body["steps"] if s["key"] == "keys")
+    assert keys_step["state"] == "todo"
+    assert "без ключей" in keys_step["note"]
+
+
+def test_api_ffd_keys_done_если_uin_не_пуст(client, monkeypatch):
+    monkeypatch.setitem(demo.DEMO_TABLES[23]["fields"][11], "value", "10000001")
+    kassa_app.FFD_CACHE["value"] = None
+    kassa_app.FFD_CACHE["at"] = 0.0
+    body = client.get("/api/ffd").json()
+    keys_step = next(s for s in body["steps"] if s["key"] == "keys")
+    assert keys_step["state"] == "done"
+
+
+def test_api_ffd_keys_unknown_при_отказе_кассы_панель_не_падает(client, monkeypatch):
+    def отказ(self, table, row, field):
+        raise kassa_app.shtrih.KKTError(0x50, "Неверный номер таблицы")
+
+    monkeypatch.setattr(demo.DemoKKT, "read_table", отказ)
+    r = client.get("/api/ffd")
+    assert r.status_code == 200
+    body = r.json()
+    keys_step = next(s for s in body["steps"] if s["key"] == "keys")
+    assert keys_step["state"] == "unknown"
+    assert [s["key"] for s in body["steps"]] == [
+        "registry", "code", "subscription", "keys", "driver", "shift", "ofd",
+        "firmware", "settlement", "reregister", "table19", "lk_fns", "trial",
+    ]
+
+
+def test_api_ffd_reregister_называет_причину_4_а_не_7(client):
+    body = client.get("/api/ffd").json()
+    reregister_step = next(s for s in body["steps"] if s["key"] == "reregister")
+    assert "4 «Изменение настроек ККТ»" in reregister_step["note"]
+    assert "7 «изменение настроек ККТ»" not in reregister_step["note"]
 
 
 def test_api_ffd_отдаёт_vat_5_7_written_и_не_отдаёт_program(client):
