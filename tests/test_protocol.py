@@ -265,6 +265,17 @@ def test_operation_tlv_шлёт_ff4d_под_паролем_сисадмина_д
     assert len(frame) == 9 + n          # плюс STX, байт длины и LRC
 
 
+def test_tags_first_desktop_модели_ждут_теги_после_операции():
+    # 250 (0xFA) — ШТРИХ-М-02Ф этой кассы, 152 — ШТРИХ-NANO-Ф
+    assert shtrih.tags_first(250) is False
+    assert shtrih.tags_first(152) is False
+
+
+def test_tags_first_кассовое_ядро_и_штрих_мобайл_ждут_теги_перед_операцией():
+    for model in (16, 19, 20, 21, 45, 46):
+        assert shtrih.tags_first(model) is True
+
+
 # --- Время и дата (21h/22h/23h) -------------------------------------------
 
 def test_set_time_шлёт_кадр_21h_с_временем_обычными_байтами():

@@ -291,6 +291,20 @@ def measure_tlv(code: int = MEASURE_PIECE) -> bytes:
     return tlv(2108, bytes([code]))
 
 
+# Модели ККТ, у которых теги операции (FF4Dh) передаются ДО самой операции
+# (FF46h): устройства на кассовом ядре (16, 20, 21, 45, 46) и ШТРИХ-МОБАЙЛ-Ф
+# (19). Все прочие модели, включая ШТРИХ-М-02Ф (модель 250 этой кассы), ждут
+# теги ПОСЛЕ операции. Спецификация v.1.18 порядок не оговаривает вовсе,
+# источник — открытый драйвер Штрих-М javapos_shtrih,
+# `SMFiscalPrinterImpl.getCapOperationTagsFirst` / `DeviceMetrics.isCashCore`.
+MODELS_TAGS_FIRST = frozenset({16, 19, 20, 21, 45, 46})
+
+
+def tags_first(model: int) -> bool:
+    """Порядок FF4Dh относительно FF46h для этой модели ККТ (см. MODELS_TAGS_FIRST)."""
+    return model in MODELS_TAGS_FIRST
+
+
 def build_frame(command: bytes, data: bytes = b"") -> bytes:
     """Собрать кадр целиком: STX | LEN | CMD | DATA | LRC."""
     body = command + data

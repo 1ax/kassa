@@ -45,6 +45,10 @@ class DemoKKT:
         # нужно видеть, что operation_tlv уходит перед operation, а не факт
         # самих вызовов по отдельности.
         "ops": [],
+        # Модель ККТ (ответ FCh) — 250 (0xFA), как у живой кассы ШТРИХ-М-02Ф.
+        # Тесты порядка FF4Dh/FF46h переключают на модели кассового ядра
+        # и ШТРИХ-МОБАЙЛ-Ф (16, 19, 20, 21, 45, 46).
+        "model": 250,
     }
 
     def __init__(self, *args, **kwargs):
@@ -83,7 +87,7 @@ class DemoKKT:
     # -- состояние --
 
     def device_type(self) -> dict:
-        return {"type": 0, "subtype": 0, "protocol": "1.14", "model": 250,
+        return {"type": 0, "subtype": 0, "protocol": "1.14", "model": self.state["model"],
                 "language": 0, "name": "ШТРИХ-М-02Ф (демо)"}
 
     def short_status(self) -> dict:

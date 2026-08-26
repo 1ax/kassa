@@ -90,6 +90,12 @@ FFD_TTL = 600.0
 # бы свежей — защёлка десять минут пропускала бы печать без проверки.
 FFD_STATE: dict = {"at": None, "value": None}
 
+# Модель ККТ (ответ FCh) — свойство железа и сама по себе не меняется, кэш
+# нужен только чтобы не гонять FCh на каждый чек. «at»: None — кэш пуст.
+# Ровно по той же причине, что у FFD_STATE, — см. комментарий там.
+MODEL_STATE: dict = {"at": None, "value": None}
+MODEL_TTL = 600.0
+
 # Версии ФФД, под которые в программе есть готовая ветка печати КАССОВОГО
 # ЧЕКА. Ветка 1.05 остаётся навсегда, ветка 1.2 добавлена рядом с ней, а не
 # вместо.
@@ -636,6 +642,30 @@ def _ffd_current(k) -> str | None:
     FFD_STATE["value"] = version
     FFD_STATE["at"] = time.monotonic()
     return version
+
+
+def _tags_first(k) -> bool:
+    """
+    Порядок FF4Dh относительно FF46h для этой кассы (см. shtrih.tags_first) —
+    по уже открытому соединению `k`. Свежее значение отдаём из MODEL_STATE,
+    не долбя кассу FCh на каждый чек.
+
+    Модель — свойство железа, читаем её один раз в MODEL_TTL. Не удалось
+    прочитать (`shtrih.KKTError` или иная ошибка) — не повод ронять печать:
+    отдаём False, то есть порядок desktop (теги после операции). Это
+    осознанный выбор по умолчанию, а не гипотеза о конкретной кассе.
+    """
+    now = time.monotonic()
+    if MODEL_STATE["at"] is not None and now - MODEL_STATE["at"] < MODEL_TTL:
+        return MODEL_STATE["value"]
+    try:
+        model = k.device_type()["model"]
+        value = shtrih.tags_first(model)
+    except Exception:
+        value = False
+    MODEL_STATE["value"] = value
+    MODEL_STATE["at"] = time.monotonic()
+    return value
 
 
 def _refuse_if_ffd_mismatch(k, versions=CODE_FFD, what: str = "кассовый чек") -> None:
@@ -1269,17 +1299,20 @@ def punch_receipt(req: ReceiptRequest):
     def run(k):
         _refuse_if_ffd_mismatch(k, CODE_FFD, "кассовый чек")
         ffd = _ffd_current(k)
+        # Тег 2108 «мера количества предмета расчёта» — обязателен в ФФД 1.2,
+        # в 1.05 такого реквизита нет вовсе, поэтому и порядок его с FF46h
+        # не важен — модель кассы для 1.05 не читаем, лишний обмен в пути
+        # печати не нужен. На 1.2 порядок берётся по модели ККТ, как в
+        # драйвере Штрих-М: кассовое ядро и ШТРИХ-МОБАЙЛ-Ф — теги вперёд,
+        # прочие (включая эту кассу, ШТРИХ-М-02Ф) — теги после. Спецификация
+        # v.1.18 этот порядок не оговаривает вовсе.
+        tags_first = _tags_first(k) if ffd == "1.2" else False
         k.open_receipt(doc_type)
         try:
             if corrected_fpd:
                 k.send_tlv(shtrih.corrected_receipt_tlv(corrected_fpd))
             for p in req.positions:
-                if ffd == "1.2":
-                    # Тег 2108 «мера количества предмета расчёта» — обязателен
-                    # в ФФД 1.2, в 1.05 такого реквизита нет. Порядок «FF4Dh
-                    # перед FF46h» спецификацией не оговорён, взят с косвенных
-                    # свидетельств (обсуждения и драйвер Штрих-М) — решение
-                    # владельца, подлежит сверке при первой обкатке на 1.2.
+                if ffd == "1.2" and tags_first:
                     k.operation_tlv(shtrih.measure_tlv())
                 k.operation(
                     op_type=req.op_type,
@@ -1290,6 +1323,8 @@ def punch_receipt(req: ReceiptRequest):
                     payment_method=p.payment_method,
                     payment_subject=p.payment_subject,
                 )
+                if ffd == "1.2" and not tags_first:
+                    k.operation_tlv(shtrih.measure_tlv())
             return k.close_receipt(
                 cash=req.cash,
                 electronic=req.electronic,

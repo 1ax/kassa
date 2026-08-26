@@ -36,11 +36,16 @@ def client(tmp_path, monkeypatch):
     kassa_app.FFD_CACHE["at"] = 0.0
     kassa_app.FFD_STATE["value"] = None
     kassa_app.FFD_STATE["at"] = None
+    # Кэш модели ККТ (MODEL_STATE) — та же история, что у FFD_STATE: иначе
+    # переключение demo.DemoKKT.state["model"] в одном тесте упрётся
+    # в закэшированное значение TTL следующего теста.
+    kassa_app.MODEL_STATE["value"] = None
+    kassa_app.MODEL_STATE["at"] = None
     demo.DemoKKT.state.update(
         shift_open=False, shift_number=6, receipt_number=0,
         last_fd=24, receipt_open=False,
         clock_offset=-268.0, date_pending=None, last_document_at=None,
-        ffd=2,
+        ffd=2, model=250,
     )
     demo.DemoKKT.state["ops"] = []
     # base_url важен: сервер принимает только локальное имя хоста,
@@ -675,8 +680,8 @@ def test_ффд_1_2_печатает_чек_но_отбивает_коррекц
     assert "1.2" in r.json()["detail"]
 
 
-def test_ффд_1_2_отправляет_тег_2108_перед_каждой_позицией(client):
-    """FF4Dh с тегом 2108 уходит перед FF46h на каждую позицию чека."""
+def test_ффд_1_2_отправляет_тег_2108_после_каждой_позиции(client):
+    """На этой модели (250, ШТРИХ-М-02Ф) FF4Dh с тегом 2108 уходит после FF46h."""
     demo.DemoKKT.state["ffd"] = 4
     client.post("/api/shift/open")
     r = client.post("/api/receipt", json={
@@ -688,11 +693,28 @@ def test_ффд_1_2_отправляет_тег_2108_перед_каждой_п�
     })
     assert r.status_code == 200
     ops = demo.DemoKKT.state["ops"]
-    assert [kind for kind, _ in ops] == ["tlv", "operation", "tlv", "operation"]
+    assert [kind for kind, _ in ops] == ["operation", "tlv", "operation", "tlv"]
     for kind, payload in ops:
         if kind == "tlv":
             tag = int.from_bytes(payload[0:2], "little")
             assert tag == 2108
+
+
+def test_ффд_1_2_на_штрих_мобайл_отправляет_тег_2108_перед_позицией(client):
+    """На модели 19 (ШТРИХ-МОБАЙЛ-Ф) порядок обратный: FF4Dh перед FF46h."""
+    demo.DemoKKT.state["ffd"] = 4
+    demo.DemoKKT.state["model"] = 19
+    client.post("/api/shift/open")
+    r = client.post("/api/receipt", json={
+        "positions": [
+            {"name": "Стоянка", "qty": 1, "price": 10},
+            {"name": "Мойка", "qty": 2, "price": 5},
+        ],
+        "cash": 20,
+    })
+    assert r.status_code == 200
+    ops = demo.DemoKKT.state["ops"]
+    assert [kind for kind, _ in ops] == ["tlv", "operation", "tlv", "operation"]
 
 
 def test_ффд_1_05_не_отправляет_тег_2108(client):
