@@ -45,6 +45,11 @@ class DemoKKT:
         # нужно видеть, что operation_tlv уходит перед operation, а не факт
         # самих вызовов по отдельности.
         "ops": [],
+        # Журнал документа (открытие/TLV документа/закрытие) — отдельно от
+        # "ops" (тот уже занят тестами позиций чека). Нужен тестам чека
+        # коррекции 1.2, чтобы видеть тип открытого документа (8Dh) и то,
+        # какие TLV ушли до закрытия (FF45h).
+        "docs": [],
         # Модель ККТ (ответ FCh) — 250 (0xFA), как у живой кассы ШТРИХ-М-02Ф.
         # Тесты порядка FF4Dh/FF46h переключают на модели кассового ядра
         # и ШТРИХ-МОБАЙЛ-Ф (16, 19, 20, 21, 45, 46).
@@ -262,6 +267,7 @@ class DemoKKT:
         if not self.state["shift_open"]:
             raise shtrih.KKTError(0x67, "Смена не открыта")
         self.state["receipt_open"] = True
+        self.state["docs"].append(("open", doc_type))
         self._note(f"открыт чек типа {doc_type}")
 
     def cancel_receipt(self):
@@ -280,11 +286,13 @@ class DemoKKT:
         self.state["receipt_open"] = False
         self.state["receipt_number"] += 1
         self.state["last_fd"] += 1
+        self.state["docs"].append(("close", None))
         self._note("чек закрыт")
         return {"change": 0.0, "fd_number": self.state["last_fd"],
                 "fiscal_sign": 1000000000 + self.state["last_fd"]}
 
     def send_tlv(self, structure: bytes):
+        self.state["docs"].append(("doc_tlv", structure))
         self._note(f"передан реквизит, {len(structure)} байт")
 
     def operation_tlv(self, structure: bytes):

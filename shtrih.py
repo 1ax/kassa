@@ -127,6 +127,14 @@ DOC_BUY = 1
 DOC_SALE_RETURN = 2
 DOC_BUY_RETURN = 3
 
+# Флаг чека коррекции для команды 8Dh в ФФД 1.1/1.2: там коррекция — это
+# обычный чек, тип документа которого равен обычному типу, сложенному по
+# «или» с этим флагом (0x80 приход, 0x81 расход, 0x82 возврат прихода,
+# 0x83 возврат расхода). В спецификации v.1.18 эти типы не описаны вовсе —
+# источник значения флага и самих типов — открытый драйвер Штрих-М
+# (javapos_shtrih, PrinterConst.SMFP_RECTYPE_CORRECTION_*).
+DOC_CORRECTION_FLAG = 0x80
+
 # Признак способа расчёта (тег 1214), ФФД 1.05
 PAYMENT_METHODS = {
     1: "Предоплата 100%",
@@ -266,6 +274,37 @@ def correction_reason_tlv(description: str, doc_date: date, doc_number: str) -> 
     inner = (
         tlv(1177, description.encode("cp1251", errors="replace"))
         + tlv(1178, struct.pack("<I", int(midnight.timestamp())))
+        + tlv(1179, doc_number.encode("cp1251", errors="replace"))
+    )
+    return tlv(1174, inner)
+
+
+def correction_type_tlv(code: int) -> bytes:
+    """
+    Тег 1173 «Тип коррекции» — один байт (0 самостоятельно, 1 по предписанию).
+
+    В ФФД 1.1/1.2 чек коррекции формируется как обычный чек (8Dh с флагом
+    DOC_CORRECTION_FLAG), поэтому тип коррекции передаётся отдельной TLV-
+    структурой через FF0Ch, а не байтом в теле команды коррекции, как в 1.05.
+    """
+    return tlv(1173, bytes([code]))
+
+
+def correction_reason_tlv_v12(doc_date: date, doc_number: str) -> bytes:
+    """
+    Тег 1174 «Основание для коррекции» для ФФД 1.1/1.2.
+
+    В этих версиях ФФД реквизита 1177 «описание коррекции» нет — поэтому
+    отдельная функция, а не переиспользование correction_reason_tlv. Ветка
+    1.05 (та функция и вся её механика) остаётся нетронутой.
+
+    Вложенные теги:
+        1178 — дата документа основания (unixtime, 4 байта)
+        1179 — номер документа основания
+    """
+    midnight = datetime.combine(doc_date, _time())
+    inner = (
+        tlv(1178, struct.pack("<I", int(midnight.timestamp())))
         + tlv(1179, doc_number.encode("cp1251", errors="replace"))
     )
     return tlv(1174, inner)

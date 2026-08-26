@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 import app as kassa_app
 import demo
+import shtrih
 
 
 @pytest.fixture
@@ -48,6 +49,7 @@ def client(tmp_path, monkeypatch):
         ffd=2, model=250,
     )
     demo.DemoKKT.state["ops"] = []
+    demo.DemoKKT.state["docs"] = []
     # base_url важен: сервер принимает только локальное имя хоста,
     # а TestClient по умолчанию представляется как «testserver».
     return TestClient(kassa_app.app, base_url="http://127.0.0.1")
@@ -664,8 +666,8 @@ def test_ффд_1_05_печатает_чек_и_коррекцию_как_ран
     assert r.json()["ok"] is True
 
 
-def test_ффд_1_2_печатает_чек_но_отбивает_коррекцию(client):
-    """Ветка кассового чека под 1.2 есть, ветки чека коррекции под 1.2 нет."""
+def test_ффд_1_2_печатает_чек(client):
+    """Ветка кассового чека под 1.2 есть и печатает."""
     demo.DemoKKT.state["ffd"] = 4
     client.post("/api/shift/open")
 
@@ -673,11 +675,6 @@ def test_ффд_1_2_печатает_чек_но_отбивает_коррекц
         "positions": [{"name": "Стоянка", "qty": 1, "price": 10}], "cash": 10})
     assert r.status_code == 200
     assert r.json()["ok"] is True
-
-    r = client.post("/api/correction", json={
-        "total": 100, "cash": 100, "reason_description": "не пробит чек"})
-    assert r.status_code == 409
-    assert "1.2" in r.json()["detail"]
 
 
 def test_ффд_1_2_отправляет_тег_2108_после_каждой_позиции(client):
@@ -725,15 +722,125 @@ def test_ффд_1_05_не_отправляет_тег_2108(client):
     assert not any(kind == "tlv" for kind, _ in demo.DemoKKT.state["ops"])
 
 
-def test_ффд_1_2_коррекция_отбивается_и_не_двигает_номер_фд(client):
-    demo.DemoKKT.state["ffd"] = 4
+def test_ффд_1_1_отбивает_и_чек_и_коррекцию_не_двигая_номер_фд(client):
+    """1.1 — версия, для которой ветки нет ни у чека, ни у коррекции."""
+    demo.DemoKKT.state["ffd"] = 3
     client.post("/api/shift/open")
     last_fd_before = demo.DemoKKT.state["last_fd"]
+
+    r = client.post("/api/receipt", json={
+        "positions": [{"name": "Стоянка", "qty": 1, "price": 10}], "cash": 10})
+    assert r.status_code == 409
+    assert "1.1" in r.json()["detail"]
+
     r = client.post("/api/correction", json={
         "total": 100, "cash": 100, "reason_description": "не пробит чек"})
     assert r.status_code == 409
-    assert "ффд" in r.json()["detail"].lower()
+    assert "1.1" in r.json()["detail"]
+
     assert demo.DemoKKT.state["last_fd"] == last_fd_before
+    assert demo.DemoKKT.state["docs"] == []
+
+
+# --- Чек коррекции ФФД 1.2 (обычный чек с позициями) ----------------------
+
+def test_ффд_1_2_коррекция_без_позиций_не_уходит(client):
+    demo.DemoKKT.state["ffd"] = 4
+    client.post("/api/shift/open")
+    r = client.post("/api/correction", json={
+        "total": 100, "cash": 100, "reason_description": "не пробит чек"})
+    assert r.status_code == 400
+    assert "позици" in r.json()["detail"].lower()
+    assert demo.DemoKKT.state["docs"] == []
+
+
+def test_ффд_1_2_удачная_коррекция_открывает_документ_типом_0x80(client):
+    demo.DemoKKT.state["ffd"] = 4
+    client.post("/api/shift/open")
+    r = client.post("/api/correction", json={
+        "total": 100, "cash": 100,
+        "reason_description": "не пробит чек за стоянку",
+        "reason_date": "2026-08-20", "reason_number": "б/н",
+        "positions": [{"name": "Стоянка", "qty": 1, "price": 100}],
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["fd_number"] > 0
+    assert body["fiscal_sign"] > 0
+
+    docs = demo.DemoKKT.state["docs"]
+    assert docs[0] == ("open", shtrih.DOC_CORRECTION_FLAG | shtrih.DOC_SALE)
+    assert [kind for kind, _ in docs[1:3]] == ["doc_tlv", "doc_tlv"]
+    assert docs[-1] == ("close", None)
+
+    ops = demo.DemoKKT.state["ops"]
+    assert [kind for kind, _ in ops] == ["operation", "tlv"]
+
+
+def test_ффд_1_2_коррекция_возврат_прихода_проходит_а_на_1_05_нет(client):
+    demo.DemoKKT.state["ffd"] = 4
+    client.post("/api/shift/open")
+    r = client.post("/api/correction", json={
+        "op_type": shtrih.OP_INCOME_RETURN, "total": 100, "cash": 100,
+        "reason_description": "не пробит чек за стоянку",
+        "positions": [{"name": "Стоянка", "qty": 1, "price": 100}],
+    })
+    assert r.status_code == 200
+    docs = demo.DemoKKT.state["docs"]
+    assert docs[0] == ("open", shtrih.DOC_CORRECTION_FLAG | shtrih.DOC_SALE_RETURN)
+
+    kassa_app.FFD_STATE["value"] = None
+    kassa_app.FFD_STATE["at"] = None
+    demo.DemoKKT.state["ffd"] = 2
+    r = client.post("/api/correction", json={
+        "op_type": shtrih.OP_INCOME_RETURN, "total": 100, "cash": 100,
+        "reason_description": "не пробит чек за стоянку",
+        "positions": [{"name": "Стоянка", "qty": 1, "price": 100}],
+    })
+    assert r.status_code == 400
+    assert "приход и расход" in r.json()["detail"]
+
+
+def test_ффд_1_2_коррекция_по_предписанию_без_номера_не_уходит(client):
+    demo.DemoKKT.state["ffd"] = 4
+    client.post("/api/shift/open")
+    r = client.post("/api/correction", json={
+        "correction_type": 1, "total": 100, "cash": 100,
+        "reason_description": "не пробит чек за стоянку",
+        "positions": [{"name": "Стоянка", "qty": 1, "price": 100}],
+    })
+    assert r.status_code == 400
+    assert "предписан" in r.json()["detail"].lower()
+
+
+def test_ффд_1_2_коррекция_не_передаёт_тег_1177_в_основании(client):
+    demo.DemoKKT.state["ffd"] = 4
+    client.post("/api/shift/open")
+    r = client.post("/api/correction", json={
+        "total": 100, "cash": 100,
+        "reason_description": "не пробит чек за стоянку",
+        "reason_date": "2026-08-20", "reason_number": "б/н",
+        "positions": [{"name": "Стоянка", "qty": 1, "price": 100}],
+    })
+    assert r.status_code == 200
+
+    reason_tlv = None
+    for kind, payload in demo.DemoKKT.state["docs"]:
+        if kind == "doc_tlv" and int.from_bytes(payload[0:2], "little") == 1174:
+            reason_tlv = payload
+    assert reason_tlv is not None
+
+    inner = reason_tlv[4:]
+    tags = []
+    i = 0
+    while i < len(inner):
+        t = int.from_bytes(inner[i:i + 2], "little")
+        n = int.from_bytes(inner[i + 2:i + 4], "little")
+        tags.append(t)
+        i += 4 + n
+    assert 1177 not in tags
+    assert tags == [1178, 1179]
 
 
 def test_api_ffd_отдаёт_code_ffd_со_списком_версий_и_карточку_code_ok(client):

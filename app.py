@@ -101,11 +101,12 @@ MODEL_TTL = 600.0
 # вместо.
 CODE_FFD = ("1.05", "1.2")
 
-# Версии ФФД, под которые есть ветка ЧЕКА КОРРЕКЦИИ. В 1.1/1.2 ошибка
-# исправляется другими документами (обратный чек коррекции + правильный
-# чек коррекции), а не тем же способом, что в 1.05 — эта ветка ещё не
-# написана.
-CORRECTION_FFD = ("1.05",)
+# Версии ФФД, под которые в программе есть готовая ветка печати ЧЕКА
+# КОРРЕКЦИИ. В 1.05 это отдельные команды FF35h/FF0Ch/FF4Ah, в 1.1/1.2 —
+# обычный чек (8Dh с флагом shtrih.DOC_CORRECTION_FLAG, теги 1173/1174 через
+# FF0Ch, позиции, закрытие обычной FF45h). Ветка 1.05 остаётся навсегда,
+# ветка 1.2 добавлена рядом с ней, а не вместо.
+CORRECTION_FFD = ("1.05", "1.2")
 
 # Порядок версий ФФД по возрастанию (значения shtrih.FFD_VERSIONS) — нужен,
 # чтобы понять, что касса «ушла» на версию новее, чем умеет программа.
@@ -271,6 +272,8 @@ class CorrectionRequest(BaseModel):
     reason_description: str = ""
     reason_date: str = Field(default_factory=lambda: date.today().isoformat())
     reason_number: str = ""
+    positions: list[Position] = []
+    corrected_fpd: str = ""
 
 
 class ConfigRequest(BaseModel):
@@ -1351,29 +1354,113 @@ def punch_receipt(req: ReceiptRequest):
 @app.post("/api/correction")
 def punch_correction(req: CorrectionRequest):
     _refuse_if_stale()
-    if req.op_type not in (shtrih.OP_INCOME, shtrih.OP_EXPENSE):
-        raise HTTPException(
-            400,
-            "В ФФД 1.05 у чека коррекции допустимы только приход и расход. "
-            "Ошибочный чек исправляется чеком возврата прихода.",
-        )
+    # Общие для обеих веток проверки: суммы оплаты и дата основания не
+    # зависят от версии ФФД, поэтому остаются снаружи run(k).
     paid = round(req.cash + req.electronic, 2)
     if abs(paid - req.total) > 0.01:
         raise HTTPException(
             400,
             f"Суммы оплаты ({paid:.2f}) не сходятся с суммой расчёта ({req.total:.2f})",
         )
-    if not req.reason_description.strip():
-        raise HTTPException(
-            400, "Без описания основания чек коррекции налоговая вправе не признать"
-        )
     try:
         reason_date = date.fromisoformat(req.reason_date)
     except ValueError:
         raise HTTPException(400, "Дата документа основания не разобрана")
 
+    corrected_fpd = req.corrected_fpd.strip()
+
+    # Тот же признак расчёта -> тип документа, что в punch_receipt.
+    doc_type_by_op = {
+        shtrih.OP_INCOME: shtrih.DOC_SALE,
+        shtrih.OP_INCOME_RETURN: shtrih.DOC_SALE_RETURN,
+        shtrih.OP_EXPENSE: shtrih.DOC_BUY,
+        shtrih.OP_EXPENSE_RETURN: shtrih.DOC_BUY_RETURN,
+    }
+
     def run(k):
         _refuse_if_ffd_mismatch(k, CORRECTION_FFD, "чек коррекции")
+        ffd = _ffd_current(k)
+
+        if ffd == "1.2":
+            # В ФФД 1.1/1.2 чек коррекции — обычный чек с позициями, поэтому
+            # и проверки как у обычного чека, а не «только приход и расход».
+            if not req.positions:
+                raise HTTPException(400, "В чеке коррекции нет ни одной позиции")
+            if any(not p.name.strip() for p in req.positions):
+                raise HTTPException(400, "У каждой позиции должно быть наименование")
+            for p in req.positions:
+                if p.vat not in shtrih.VAT_RATES:
+                    raise HTTPException(400, f"Неизвестная ставка НДС: {p.vat}")
+            positions_total = round(sum(p.qty * p.price for p in req.positions), 2)
+            if abs(positions_total - req.total) > 0.01:
+                raise HTTPException(
+                    400,
+                    f"Сумма позиций ({positions_total:.2f}) не сходится с суммой "
+                    f"расчёта ({req.total:.2f})",
+                )
+            doc_type = doc_type_by_op.get(req.op_type)
+            if doc_type is None:
+                raise HTTPException(400, f"Неизвестный признак расчёта: {req.op_type}")
+            if req.correction_type == 1 and not req.reason_number.strip():
+                raise HTTPException(
+                    400,
+                    "Коррекция по предписанию требует номер документа основания",
+                )
+            if corrected_fpd and not corrected_fpd.isdigit():
+                raise HTTPException(
+                    400, "ФПД исправляемого чека состоит только из цифр"
+                )
+
+            k.open_receipt(shtrih.DOC_CORRECTION_FLAG | doc_type)
+            try:
+                k.send_tlv(shtrih.correction_type_tlv(req.correction_type))
+                k.send_tlv(
+                    shtrih.correction_reason_tlv_v12(reason_date, req.reason_number)
+                )
+                if corrected_fpd:
+                    k.send_tlv(shtrih.corrected_receipt_tlv(corrected_fpd))
+                tags_first = _tags_first(k)
+                for p in req.positions:
+                    if tags_first:
+                        k.operation_tlv(shtrih.measure_tlv())
+                    k.operation(
+                        op_type=req.op_type,
+                        qty=p.qty,
+                        price=p.price,
+                        name=p.name,
+                        vat=p.vat,
+                        payment_method=p.payment_method,
+                        payment_subject=p.payment_subject,
+                    )
+                    if not tags_first:
+                        k.operation_tlv(shtrih.measure_tlv())
+                # Описание коррекции на 1.2 никуда не идёт: реквизита 1177
+                # в этой версии ФФД нет, а печатать его свободным текстом —
+                # решение владельца, которого не было.
+                return k.close_receipt(
+                    cash=req.cash,
+                    electronic=req.electronic,
+                    tax_system=req.tax_system,
+                )
+            except Exception:
+                # Не оставляем открытый документ висеть в кассе
+                try:
+                    k.cancel_receipt()
+                except Exception:
+                    pass
+                raise
+
+        # Ветка 1.05: FF35h -> FF0Ch -> FF4Ah, проверки специфичные для неё.
+        if req.op_type not in (shtrih.OP_INCOME, shtrih.OP_EXPENSE):
+            raise HTTPException(
+                400,
+                "В ФФД 1.05 у чека коррекции допустимы только приход и расход. "
+                "Ошибочный чек исправляется чеком возврата прихода.",
+            )
+        if not req.reason_description.strip():
+            raise HTTPException(
+                400, "Без описания основания чек коррекции налоговая вправе не признать"
+            )
         return k.correction(
             correction_type=req.correction_type,
             op_type=req.op_type,

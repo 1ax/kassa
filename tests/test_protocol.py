@@ -245,6 +245,34 @@ def test_send_tlv_шлёт_ff0c_с_паролем_сисадмина_и_стру
     assert frame[4:-1] == shtrih.password(88) + structure
 
 
+# --- Чек коррекции ФФД 1.1/1.2 (теги 1173/1174 без 1177) ------------------
+
+def test_тип_коррекции_кодируется_тегом_1173():
+    raw = shtrih.correction_type_tlv(1)
+    tag = int.from_bytes(raw[0:2], "little")
+    length = int.from_bytes(raw[2:4], "little")
+    assert tag == 1173
+    assert length == 1
+    assert raw[4:5] == bytes([1])
+
+
+def test_основание_коррекции_1_2_содержит_только_1178_и_1179_без_1177():
+    raw = shtrih.correction_reason_tlv_v12(date(2026, 8, 20), "б/н")
+    tag, length = int.from_bytes(raw[0:2], "little"), int.from_bytes(raw[2:4], "little")
+    assert tag == 1174
+    assert length == len(raw) - 4
+    inner = raw[4:]
+    tags = []
+    i = 0
+    while i < len(inner):
+        t = int.from_bytes(inner[i:i + 2], "little")
+        n = int.from_bytes(inner[i + 2:i + 4], "little")
+        tags.append(t)
+        i += 4 + n
+    assert tags == [1178, 1179]
+    assert 1177 not in tags
+
+
 # --- Мера количества (тег 2108, ФФД 1.2) и FF4Dh --------------------------
 
 def test_measure_tlv_даёт_тег_2108_штука():
