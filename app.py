@@ -692,6 +692,20 @@ def service():
         unconfirmed = k.unconfirmed_documents()
         days = days_left(expiry["expiry"])
         by_length = _ffd_by_length(fiscal["data_length"])
+        # Число перерегистраций команда 11h не отдаёт: смещение 36-39 её
+        # ответа, где спецификация обещает эти счётчики, на живой кассе —
+        # нули (раскладка не подтверждена, см. long_status()). Настоящий
+        # источник — архив ФН: сколько там отчётов о регистрации/
+        # перерегистрации, столько их и израсходовано.
+        try:
+            registrations = k.last_registration_report()
+        except shtrih.KKTError:
+            registrations = None
+        raw_counters = k.long_status()["fp_counters"]
+        fp_counters = raw_counters if raw_counters != "00 00 00 00" else None
+        # Первый отчёт в архиве — сама регистрация, а не перерегистрация:
+        # вычитаем его, чтобы число сходилось с тем, что показывает ЛК ФНС.
+        reregistrations = registrations - 1 if registrations else None
         return {
             "online": True,
             "demo": DEMO,
@@ -708,6 +722,9 @@ def service():
             # только чтобы интерфейс показал плашку и заблокировал кнопки
             # заранее, не дожидаясь отказа при попытке пробить чек.
             "ffd_blocked": by_length is not None and by_length not in CODE_FFD,
+            "registrations": registrations,
+            "reregistrations": reregistrations,
+            "fp_counters": fp_counters,
         }
 
     try:

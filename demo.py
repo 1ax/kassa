@@ -101,6 +101,7 @@ class DemoKKT:
             "submode": 0, "port": 2,
             "date": now.strftime("%d.%m.%Y"), "time": now.strftime("%H:%M:%S"),
             "serial": 0, "last_closed_shift": self.state["shift_number"] - 1,
+            "fp_counters": "00 00 00 00",
             "inn": None,
         }
 

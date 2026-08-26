@@ -519,6 +519,19 @@
         <div class="gauge"><dt>Система налогообложения</dt><dd id="svc-sno" style="font-size:13px">—</dd></div>
         <div class="gauge"><dt>Регистрация: № ФД / признак</dt><dd id="svc-fisc-fd" style="font-size:12px">—</dd></div>
         <div class="gauge"><dt>ФД без квитанции ОФД</dt><dd id="svc-unconfirmed">—</dd></div>
+        <div class="gauge">
+          <dt>Перерегистраций ФН</dt>
+          <dd id="svc-registrations">—</dd>
+          <dd class="sub" id="svc-registrations-note">Считается по архиву ФН;
+            столько же показывает ЛК ФНС. Сколько осталось — предел самого ФН,
+            протоколом не читается: ЦТО обычно называют 12 перерегистраций
+            на накопитель, точное число — в паспорте ФН.</dd>
+        </div>
+        <div class="gauge" id="svc-fp-counters-row" hidden>
+          <dt>Служебные счётчики ФП</dt>
+          <dd id="svc-fp-counters">—</dd>
+          <dd class="sub">Раскладка не подтверждена, сырые байты ответа 11h.</dd>
+        </div>
         <div class="gauge"><dt>Расхождение часов</dt><dd id="svc-drift" style="font-size:12px">—</dd></div>
         <div class="gauge"><dt>Скорость ухода</dt><dd id="svc-rate" style="font-size:12px">—</dd></div>
       </dl>
@@ -1137,11 +1150,12 @@ async function loadLog() {
 // таймеру приборной панели.
 
 const SVC_FIELDS = ['svc-expiry', 'svc-version', 'svc-fisc-at', 'svc-reg',
-                     'svc-sno', 'svc-fisc-fd', 'svc-unconfirmed'];
+                     'svc-sno', 'svc-fisc-fd', 'svc-unconfirmed', 'svc-registrations'];
 
 async function loadService(retried = false) {
   const fail = (text) => {
     SVC_FIELDS.forEach(id => { $(id).textContent = '—'; $(id).className = ''; });
+    $('svc-fp-counters-row').hidden = true;
     $('svc-error').textContent = text;
     $('svc-error').style.display = '';
   };
@@ -1212,6 +1226,11 @@ async function loadService(retried = false) {
     $('svc-fisc-fd').textContent = (f.fd != null) ? `№ ${f.fd} / ${f.fp}` : '—';
     $('svc-unconfirmed').textContent = s.unconfirmed;
     $('svc-unconfirmed').className = s.unconfirmed_warning ? 'warn' : '';
+    $('svc-registrations').textContent = (s.reregistrations === null || s.reregistrations === undefined)
+      ? 'неизвестно: касса не поддерживает FF0Eh'
+      : `${s.reregistrations} (отчётов в архиве ФН: ${s.registrations}, первый — регистрация)`;
+    $('svc-fp-counters-row').hidden = (s.fp_counters === null || s.fp_counters === undefined);
+    $('svc-fp-counters').textContent = s.fp_counters || '—';
     updateFfdButton(s.ffd_by_length);
     ffdBlocked = !!s.ffd_blocked;
     $('ffd-blocked').hidden = !ffdBlocked;

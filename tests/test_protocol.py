@@ -331,6 +331,7 @@ def test_разбор_полного_статуса_живой_кассы():
     assert st["time"] == "20:23:38"
     assert st["serial"] == 12345
     assert st["last_closed_shift"] == 6
+    assert st["fp_counters"] == "00 00 00 00"  # раскладка не подтверждена, отдаём сырьём
     assert st["inn"] == 771234567859         # 12 цифр, контрольная сумма сходится
 
 

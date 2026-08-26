@@ -303,6 +303,9 @@ def test_панель_обслуживания_работает_на_эмуля�
     assert body["online"] is True
     assert body["fn_expiry_warning"] is False
     assert body["unconfirmed_warning"] is False
+    assert body["registrations"] == 1         # в архиве ФН один отчёт — регистрация
+    assert body["reregistrations"] == 0      # перерегистраций ещё не было
+    assert body["fp_counters"] is None       # эмулятор отдаёт нули — на экран не выводим
 
 
 def test_панель_обслуживания_переживает_короткую_занятость(client):
