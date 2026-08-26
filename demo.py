@@ -194,7 +194,11 @@ class DemoKKT:
             return None
         values = {
             shtrih.TAG_FFD_VERSION: self.state["ffd"],
-            shtrih.TAG_FFD_KKT: 2,       # ККТ умеет максимум 1.05
+            # ККТ не может работать по версии выше той, что умеет сама:
+            # при state["ffd"] = 4 «касса на 1.2» обязана и уметь 1.2.
+            # По умолчанию (1.05) остаётся как на живой кассе: ФН умеет
+            # 1.2, ККТ — нет, и весь переход упирается в прошивку.
+            shtrih.TAG_FFD_KKT: max(2, self.state["ffd"]),
             shtrih.TAG_FFD_FN: 4,        # ФН умеет 1.2
         }
         if tag not in values:

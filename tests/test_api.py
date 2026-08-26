@@ -853,13 +853,11 @@ def test_api_ffd_отдаёт_code_ffd_со_списком_версий_и_ка�
 
 def test_api_ffd_отдаёт_чек_лист_готовности_программы(client):
     body = client.get("/api/ffd").json()
-    program = body["program"]
-    receipt = next(p for p in program if p["key"] == "receipt")
-    correction = next(p for p in program if p["key"] == "correction")
-    assert receipt["written"] is True and receipt["verified"] is False
-    assert correction["written"] is True and correction["verified"] is False
-    vat = next(p for p in program if p["key"] == "vat_5_7")
-    assert vat["written"] is False
+    steps = body["steps"]
+    assert [s["key"] for s in steps] == [
+        "code", "shift", "ofd", "settlement", "firmware",
+        "table19", "lk_fns", "trial",
+    ]
 
 
 def test_api_ffd_written_у_correction_выводится_из_correction_ffd_а_не_вписан(
@@ -869,8 +867,8 @@ def test_api_ffd_written_у_correction_выводится_из_correction_ffd_а
     kassa_app.FFD_CACHE["value"] = None
     kassa_app.FFD_CACHE["at"] = 0.0
     body = client.get("/api/ffd").json()
-    correction = next(p for p in body["program"] if p["key"] == "correction")
-    assert correction["written"] is False
+    code_step = next(s for s in body["steps"] if s["key"] == "code")
+    assert code_step["state"] == "todo"
     code_card = next(c for c in body["checks"] if c["key"] == "code")
     assert "чек коррекции" not in code_card["value"]
     kassa_app.FFD_CACHE["value"] = None
@@ -883,6 +881,63 @@ def test_api_ffd_карточка_code_упоминает_чек_и_коррек
     assert "кассовый чек" in code_card["value"]
     assert "чек коррекции" in code_card["value"]
     assert code_card["state"] == "ok"
+
+
+def test_api_ffd_на_1_05_lk_fns_и_firmware_todo_code_done(client):
+    demo.DemoKKT.state["ffd"] = 2
+    kassa_app.FFD_CACHE["value"] = None
+    kassa_app.FFD_CACHE["at"] = 0.0
+    body = client.get("/api/ffd").json()
+    steps = {s["key"]: s for s in body["steps"]}
+    assert steps["lk_fns"]["state"] == "todo"
+    assert steps["firmware"]["state"] == "todo"
+    assert steps["code"]["state"] == "done"
+
+
+def test_api_ffd_на_1_2_lk_fns_и_firmware_done(client):
+    demo.DemoKKT.state["ffd"] = 4
+    kassa_app.FFD_CACHE["value"] = None
+    kassa_app.FFD_CACHE["at"] = 0.0
+    body = client.get("/api/ffd").json()
+    steps = {s["key"]: s for s in body["steps"]}
+    assert steps["lk_fns"]["state"] == "done"
+    # Касса, работающая по 1.2, обязана и уметь 1.2: эмулятор до этой правки
+    # изображал невозможное — тег 1209 «1.2» при теге 1189 «1.05».
+    assert steps["firmware"]["state"] == "done"
+
+
+def test_api_ffd_смена_открыта_todo_закрыта_done(client):
+    demo.DemoKKT.state["shift_open"] = True
+    kassa_app.FFD_CACHE["value"] = None
+    kassa_app.FFD_CACHE["at"] = 0.0
+    body = client.get("/api/ffd").json()
+    shift_step = next(s for s in body["steps"] if s["key"] == "shift")
+    assert shift_step["state"] == "todo"
+
+    demo.DemoKKT.state["shift_open"] = False
+    kassa_app.FFD_CACHE["value"] = None
+    kassa_app.FFD_CACHE["at"] = 0.0
+    body = client.get("/api/ffd").json()
+    shift_step = next(s for s in body["steps"] if s["key"] == "shift")
+    assert shift_step["state"] == "done"
+
+
+def test_api_ffd_settlement_table19_trial_всегда_manual(client):
+    for ffd_code in (2, 4):
+        demo.DemoKKT.state["ffd"] = ffd_code
+        kassa_app.FFD_CACHE["value"] = None
+        kassa_app.FFD_CACHE["at"] = 0.0
+        body = client.get("/api/ffd").json()
+        steps = {s["key"]: s for s in body["steps"]}
+        assert steps["settlement"]["state"] == "manual"
+        assert steps["table19"]["state"] == "manual"
+        assert steps["trial"]["state"] == "manual"
+
+
+def test_api_ffd_отдаёт_vat_5_7_written_и_не_отдаёт_program(client):
+    body = client.get("/api/ffd").json()
+    assert body["vat_5_7_written"] is False
+    assert "program" not in body
 
 
 def test_ффд_1_2_не_блокирует_смену_и_х_отчёт_и_аннулирование(client):

@@ -579,12 +579,17 @@
         <dl id="ffd-checks" style="margin:0"></dl>
       </fieldset>
       <fieldset style="margin-top:20px">
-        <legend>Готовность программы</legend>
+        <legend>Что осталось до перехода</legend>
         <p style="font-size:11px;color:var(--dim);line-height:1.5;margin:0 0 10px">
-          «Написано» не значит «проверено»: на живой кассе не прошёл ни один
-          документ по ФФД 1.2 и не пройдёт, пока не обновлена прошивка ККТ.
+          Отметки нигде не хранятся: выводятся заново при каждом обновлении из
+          ответа кассы и из кода. Строки «проверить самому» программа
+          подтвердить не может.
         </p>
-        <dl id="ffd-program" style="margin:0"></dl>
+        <dl id="ffd-steps" style="margin:0"></dl>
+        <p id="ffd-vat-5-7" style="display:none;font-size:11px;color:var(--dim);line-height:1.5;margin:10px 0 0">
+          Ставки НДС 5% и 7% (команды FF76h/FF77h) в программе не заведены,
+          к переходу на ФФД 1.2 это отношения не имеет.
+        </p>
       </fieldset>
       <fieldset style="margin-top:20px">
         <legend>Риски</legend>
@@ -593,10 +598,6 @@
           отдельная сборка. На время работ касса не работает. Нужна перерегистрация
           в ЛК ФНС, которая расходует одну перерегистрацию из конечного числа у ФН.
         </p>
-      </fieldset>
-      <fieldset>
-        <legend>Порядок действий</legend>
-        <ol id="ffd-steps" style="font-size:12px;color:var(--dim);line-height:1.8;margin:0;padding-left:18px"></ol>
       </fieldset>
       <button class="minor" onclick="loadFfd()">Обновить</button>
     </section>
@@ -1452,54 +1453,41 @@ function daysUntil(s) {
 }
 
 function renderFfdChecks(checks) {
-  $('ffd-checks').innerHTML = checks.map(c => `
+  $('ffd-checks').innerHTML = checks.map(c => {
+    // Срок действия ФН показываем вместе с остатком дней: сама дата ни о чём
+    // не говорит, пока её не сравнишь с сегодняшней, а порог перехода
+    // считается именно в днях (см. примечание к карточке).
+    const days = c.key === 'fn_expiry' ? daysUntil(c.value) : null;
+    const value = days === null ? c.value : `${c.value} (осталось дней: ${days})`;
+    return `
     <div class="gauge">
       <dt>${esc(c.title)}</dt>
       <dd class="${c.state === 'warn' ? 'warn' : ''}"
-          style="${c.state === 'unknown' ? 'color:var(--dim)' : ''}">${esc(c.value)}</dd>
+          style="${c.state === 'unknown' ? 'color:var(--dim)' : ''}">${esc(value)}</dd>
       ${c.note ? `<div style="font-size:11px;color:var(--dim);margin-top:3px">${esc(c.note)}</div>` : ''}
-    </div>`).join('');
-}
-
-function renderFfdProgram(program) {
-  $('ffd-program').innerHTML = program.map(p => {
-    const mark = p.written ? '✓' : '—';
-    const label = !p.written
-      ? 'не написано'
-      : (p.verified ? 'проверено на кассе' : 'написано, на кассе не проверено');
-    const dim = !p.written;
-    return `
-    <div class="gauge">
-      <dt>${esc(p.title)}</dt>
-      <dd style="${dim ? 'color:var(--dim)' : ''}">${esc(mark)} ${esc(label)}</dd>
-      ${p.note ? `<div style="font-size:11px;color:var(--dim);margin-top:3px">${esc(p.note)}</div>` : ''}
     </div>`;
   }).join('');
 }
 
-function renderFfdSteps(s) {
-  const fnCheck = (s.checks || []).find(c => c.key === 'fn_expiry');
-  const expiry = fnCheck ? fnCheck.value : 'неизвестно';
-  const days = fnCheck ? daysUntil(fnCheck.value) : null;
-  const daysText = days === null ? '' : ` (осталось дней: ${days})`;
-  const snap = s.snapshot || {};
-  const fw = snap.sw_version
-    ? `${snap.sw_version} сборка ${snap.sw_build} от ${snap.sw_date}`
-    : 'неизвестно';
-  const steps = [
-    `Убедиться, что ФН поддерживает ФФД 1.2 и зарегистрирован. Срок действия ` +
-      `ФН у этой кассы: ${expiry}${daysText}.`,
-    'Закрыть смену.',
-    'Дождаться, пока все документы уйдут в ОФД.',
-    'Снять отчёт о состоянии расчётов — кнопкой «Отчёт о состоянии расчётов» ' +
-      'на панели обслуживания.',
-    `Включить в утилите Штрих-М автоматическую перерегистрацию на ФФД 1.2 и обновить ` +
-      `прошивку (сейчас установлена: ${fw}) — прошивка сама сформирует отчёт об изменении ` +
-      `параметров регистрации.`,
-    'Настроить таблицу 19 под своего ОФД.',
-    'Перерегистрироваться в личном кабинете ФНС.',
-  ];
-  $('ffd-steps').innerHTML = steps.map(t => `<li>${esc(t)}</li>`).join('');
+const FFD_STEP_MARK = {
+  done: ['✓', 'сделано'],
+  todo: ['—', 'предстоит'],
+  manual: ['?', 'проверить самому'],
+  unknown: ['?', 'неизвестно'],
+};
+
+function renderFfdSteps(steps) {
+  $('ffd-steps').innerHTML = steps.map(t => {
+    const [mark, label] = FFD_STEP_MARK[t.state] || ['?', 'неизвестно'];
+    const dim = t.state === 'manual' || t.state === 'unknown';
+    return `
+    <div class="gauge">
+      <dt>${esc(t.title)}</dt>
+      <dd class="${t.state === 'todo' ? 'warn' : ''}"
+          style="${dim ? 'color:var(--dim)' : ''}">${esc(mark)} ${esc(label)}</dd>
+      ${t.note ? `<div style="font-size:11px;color:var(--dim);margin-top:3px">${esc(t.note)}</div>` : ''}
+    </div>`;
+  }).join('');
 }
 
 async function loadFfd(retried = false) {
@@ -1507,8 +1495,8 @@ async function loadFfd(retried = false) {
     $('ffd-verdict').style.display = 'none';
     $('ffd-unsupported').style.display = 'none';
     $('ffd-checks').innerHTML = '';
-    $('ffd-program').innerHTML = '';
     $('ffd-steps').innerHTML = '';
+    $('ffd-vat-5-7').style.display = 'none';
     $('ffd-error').textContent = text;
     $('ffd-error').style.display = '';
   };
@@ -1551,8 +1539,8 @@ async function loadFfd(retried = false) {
     $('ffd-verdict').style.display = '';
     $('ffd-unsupported').style.display = s.unsupported ? '' : 'none';
     renderFfdChecks(s.checks || []);
-    renderFfdProgram(s.program || []);
-    renderFfdSteps(s);
+    renderFfdSteps(s.steps || []);
+    $('ffd-vat-5-7').style.display = s.vat_5_7_written === false ? '' : 'none';
   } catch (e) {
     fail('Панель перехода на ФФД 1.2 недоступна');
   }
