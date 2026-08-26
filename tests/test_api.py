@@ -855,8 +855,8 @@ def test_api_ffd_отдаёт_чек_лист_готовности_програ�
     body = client.get("/api/ffd").json()
     steps = body["steps"]
     assert [s["key"] for s in steps] == [
-        "code", "shift", "ofd", "settlement", "firmware",
-        "table19", "lk_fns", "trial",
+        "registry", "code", "subscription", "shift", "ofd",
+        "firmware", "settlement", "reregister", "lk_fns", "trial",
     ]
 
 
@@ -922,15 +922,17 @@ def test_api_ffd_смена_открыта_todo_закрыта_done(client):
     assert shift_step["state"] == "done"
 
 
-def test_api_ffd_settlement_table19_trial_всегда_manual(client):
+def test_api_ffd_registry_subscription_settlement_reregister_trial_всегда_manual(client):
     for ffd_code in (2, 4):
         demo.DemoKKT.state["ffd"] = ffd_code
         kassa_app.FFD_CACHE["value"] = None
         kassa_app.FFD_CACHE["at"] = 0.0
         body = client.get("/api/ffd").json()
         steps = {s["key"]: s for s in body["steps"]}
+        assert steps["registry"]["state"] == "manual"
+        assert steps["subscription"]["state"] == "manual"
         assert steps["settlement"]["state"] == "manual"
-        assert steps["table19"]["state"] == "manual"
+        assert steps["reregister"]["state"] == "manual"
         assert steps["trial"]["state"] == "manual"
 
 
@@ -938,6 +940,31 @@ def test_api_ffd_отдаёт_vat_5_7_written_и_не_отдаёт_program(clien
     body = client.get("/api/ffd").json()
     assert body["vat_5_7_written"] is False
     assert "program" not in body
+
+
+def test_api_ffd_settlement_идёт_после_firmware_в_списке_шагов(client):
+    body = client.get("/api/ffd").json()
+    keys = [s["key"] for s in body["steps"]]
+    assert keys.index("settlement") > keys.index("firmware")
+
+
+def test_api_ffd_отдаёт_vat_22_written_false_на_текущем_справочнике(client):
+    body = client.get("/api/ffd").json()
+    assert body["vat_22_written"] is False
+
+
+def test_api_ffd_vat_22_written_выводится_из_справочника_а_не_вписан(
+    client, monkeypatch
+):
+    # Значение байта выдумано: тесту важно только наличие ключа. Настоящий
+    # код ставки 22% берётся из спецификации, когда её будут добавлять.
+    monkeypatch.setitem(shtrih.VAT_RATES, "22", 0x8C)
+    kassa_app.FFD_CACHE["value"] = None
+    kassa_app.FFD_CACHE["at"] = 0.0
+    body = client.get("/api/ffd").json()
+    assert body["vat_22_written"] is True
+    kassa_app.FFD_CACHE["value"] = None
+    kassa_app.FFD_CACHE["at"] = 0.0
 
 
 def test_ффд_1_2_не_блокирует_смену_и_х_отчёт_и_аннулирование(client):

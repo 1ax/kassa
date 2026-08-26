@@ -590,6 +590,11 @@
           Ставки НДС 5% и 7% (команды FF76h/FF77h) в программе не заведены,
           к переходу на ФФД 1.2 это отношения не имеет.
         </p>
+        <p id="ffd-vat-22" style="display:none;font-size:11px;color:var(--dim);line-height:1.5;margin:10px 0 0">
+          С 01.01.2026 основная ставка НДС — 22%, в программе такой ставки
+          нет; если чеки печатаются «без НДС», переходу на ФФД 1.2 это не
+          мешает.
+        </p>
       </fieldset>
       <fieldset style="margin-top:20px">
         <legend>Риски</legend>
@@ -1494,6 +1499,7 @@ async function loadFfd(retried = false) {
     $('ffd-checks').innerHTML = '';
     $('ffd-steps').innerHTML = '';
     $('ffd-vat-5-7').style.display = 'none';
+    $('ffd-vat-22').style.display = 'none';
     $('ffd-error').textContent = text;
     $('ffd-error').style.display = '';
   };
@@ -1538,6 +1544,7 @@ async function loadFfd(retried = false) {
     renderFfdChecks(s.checks || []);
     renderFfdSteps(s.steps || []);
     $('ffd-vat-5-7').style.display = s.vat_5_7_written === false ? '' : 'none';
+    $('ffd-vat-22').style.display = s.vat_22_written === false ? '' : 'none';
   } catch (e) {
     fail('Панель перехода на ФФД 1.2 недоступна');
   }
