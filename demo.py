@@ -12,10 +12,19 @@
 
 from __future__ import annotations
 
+import os
 import time
 from datetime import date, datetime, timedelta
 
 import shtrih
+
+# Версия ФФД эмулятора по переменной окружения KASSA_DEMO_FFD ("1.05", "1.1",
+# "1.2") — чтобы форму чека коррекции на ветке 1.2 можно было увидеть в демо
+# руками, без живой кассы. Сопоставление строки с числовым кодом тега 1209 —
+# через shtrih.FFD_VERSIONS (единственный источник, без второй таблицы).
+# Значение не задано или не распознано — как раньше, 1.05 (код 2).
+_FFD_CODE_BY_VERSION = {version: code for code, version in shtrih.FFD_VERSIONS.items()}
+_DEMO_FFD_CODE = _FFD_CODE_BY_VERSION.get(os.environ.get("KASSA_DEMO_FFD", ""), 2)
 
 
 class DemoKKT:
@@ -40,7 +49,7 @@ class DemoKKT:
         # кассы на 25.08.2026), 4 — 1.2, None — версия не определяется
         # (касса отвечает 0x37 «команда не поддерживается», как и на живой
         # кассе для FF0Eh). Переключается тестами защёлки перед печатью.
-        "ffd": 2,
+        "ffd": _DEMO_FFD_CODE,
         # Фактический порядок команд позиции чека — тестам защёлки на 1.2
         # нужно видеть, что operation_tlv уходит перед operation, а не факт
         # самих вызовов по отдельности.

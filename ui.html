@@ -140,6 +140,13 @@
   .row { display: grid; gap: 10px; margin-bottom: 12px; }
   .row.c2 { grid-template-columns: 1fr 1fr; }
   .row.c3 { grid-template-columns: 2fr 1fr 1fr; }
+  /* .row задаёт display:grid сама — просто [hidden] эту декларацию не
+     перебивает (тот же случай, что и .modes[hidden] выше). */
+  .row[hidden] { display: none; }
+
+  /* Подсветка обязательности поля чека коррекции на ФФД 1.2 (номер документа
+     основания при типе «по предписанию») — тем же цветом, что и .gauge dd.warn. */
+  .corr-required { color: var(--brass); }
 
   /* ---- позиции ---- */
 
@@ -373,7 +380,7 @@
       <fieldset>
         <legend>Позиции</legend>
         <div id="positions"></div>
-        <button class="add" onclick="addPos()">+ Добавить позицию</button>
+        <button class="add" onclick="addPos('sale')">+ Добавить позицию</button>
       </fieldset>
 
       <fieldset>
@@ -422,18 +429,15 @@
         <div class="row c2">
           <div>
             <label for="c-type">Тип</label>
-            <select id="c-type" onchange="draw()">
+            <select id="c-type" onchange="renderCorrForm(); draw()">
               <option value="0">Самостоятельно</option>
               <option value="1">По предписанию</option>
             </select>
           </div>
           <div>
             <label for="c-op">Признак расчёта</label>
-            <select id="c-op" onchange="draw()">
-              <option value="1">Приход</option>
-              <option value="3">Расход</option>
-            </select>
-            <p style="font-size:11px;color:var(--dim)">
+            <select id="c-op" onchange="draw()"></select>
+            <p id="c-op-note" style="font-size:11px;color:var(--dim)">
               В ФФД 1.05 у чека коррекции допустимы только приход и расход.
               Ошибочный чек исправляется обычным чеком возврата прихода.
             </p>
@@ -468,9 +472,15 @@
         </div>
       </fieldset>
 
+      <fieldset id="c-positions-block" hidden>
+        <legend>Позиции</legend>
+        <div id="c-positions"></div>
+        <button class="add" onclick="addPos('corr')">+ Добавить позицию</button>
+      </fieldset>
+
       <fieldset>
         <legend>Основание</legend>
-        <div class="row">
+        <div class="row" id="c-desc-row">
           <div>
             <label for="c-desc">Описание коррекции</label>
             <input id="c-desc" placeholder="Например: не пробит чек за стоянку" oninput="draw()">
@@ -478,13 +488,22 @@
         </div>
         <div class="row c2">
           <div>
-            <label for="c-date">Дата документа основания</label>
+            <label for="c-date" id="c-date-label">Дата документа основания</label>
             <input type="date" id="c-date" oninput="draw()">
           </div>
           <div>
-            <label for="c-num">Номер документа основания</label>
+            <label for="c-num" id="c-num-label">Номер документа основания</label>
             <input id="c-num" placeholder="б/н" oninput="draw()">
           </div>
+        </div>
+        <div class="row" id="c-fpd-row" hidden>
+          <div>
+            <label for="c-fpd">ФПД корректируемого чека</label>
+            <input id="c-fpd" placeholder="Например: 2074148893" oninput="draw()">
+          </div>
+          <p style="font-size:11px;color:var(--dim)">
+            Необязательно. Методичка ФНС рекомендует связывать документы этим реквизитом.
+          </p>
         </div>
       </fieldset>
 
@@ -623,50 +642,60 @@
 <script>
 const W = 32;               // ширина чековой ленты в символах
 let mode = 'sale';
-let positions = [];
+// Два независимых набора позиций — у кассового чека и у чека коррекции
+// (ветка ФФД 1.2). Общий редактор (renderPos/addPos/dropPos/setPos) работает
+// с любым набором по имени, наборы друг на друга не влияют.
+const POS = { sale: [], corr: [] };
+const POS_CONTAINER = { sale: 'positions', corr: 'c-positions' };
+
+// Версия ФФД кассы — из /api/status (status(), тот же источник, что у
+// защёлки перед печатью). Неизвестна, пока первый ответ не пришёл, —
+// считаем 1.05, как и решено для случая, когда касса её не сообщает.
+let ffdVersion = '1.05';
+const isFfd12 = () => ffdVersion === '1.2';
 
 const $ = id => document.getElementById(id);
 const rub = n => Number(n || 0).toFixed(2);
 
 // --- позиции ---
 
-function addPos() {
-  positions.push({ name: '', qty: 1, price: 0, vat: 'none', subject: 4, method: 4 });
-  renderPos(); draw();
+function addPos(set) {
+  POS[set].push({ name: '', qty: 1, price: 0, vat: 'none', subject: 4, method: 4 });
+  renderPos(set); draw();
 }
-function dropPos(i) { positions.splice(i, 1); renderPos(); draw(); }
-function setPos(i, k, v) { positions[i][k] = v; draw(); }
+function dropPos(set, i) { POS[set].splice(i, 1); renderPos(set); draw(); }
+function setPos(set, i, k, v) { POS[set][i][k] = v; draw(); }
 
-function renderPos() {
-  $('positions').innerHTML = positions.map((p, i) => `
+function renderPos(set) {
+  $(POS_CONTAINER[set]).innerHTML = POS[set].map((p, i) => `
     <div class="pos">
-      <button class="drop" onclick="dropPos(${i})" title="Убрать позицию">&times;</button>
+      <button class="drop" onclick="dropPos('${set}',${i})" title="Убрать позицию">&times;</button>
       <div class="row"><div>
         <label>Наименование</label>
-        <input value="${esc(p.name)}" oninput="setPos(${i},'name',this.value)"
+        <input value="${esc(p.name)}" oninput="setPos('${set}',${i},'name',this.value)"
                placeholder="Стоянка яхты, июль">
       </div></div>
       <div class="row c3">
         <div><label>Цена, ₽</label>
           <input type="number" step="0.01" min="0" value="${p.price}"
-                 oninput="setPos(${i},'price',+this.value)"></div>
+                 oninput="setPos('${set}',${i},'price',+this.value)"></div>
         <div><label>Кол-во</label>
           <input type="number" step="0.001" min="0" value="${p.qty}"
-                 oninput="setPos(${i},'qty',+this.value)"></div>
+                 oninput="setPos('${set}',${i},'qty',+this.value)"></div>
         <div><label>НДС</label>
-          <select onchange="setPos(${i},'vat',this.value)">
+          <select onchange="setPos('${set}',${i},'vat',this.value)">
             ${opt('none','Без НДС',p.vat)}${opt('20','20%',p.vat)}${opt('10','10%',p.vat)}
             ${opt('0','0%',p.vat)}${opt('20/120','20/120',p.vat)}${opt('10/110','10/110',p.vat)}
           </select></div>
       </div>
       <div class="row c2">
         <div><label>Предмет расчёта</label>
-          <select onchange="setPos(${i},'subject',+this.value)">
+          <select onchange="setPos('${set}',${i},'subject',+this.value)">
             ${opt(4,'Услуга',p.subject)}${opt(1,'Товар',p.subject)}
             ${opt(3,'Работа',p.subject)}${opt(13,'Иное',p.subject)}
           </select></div>
         <div><label>Способ расчёта</label>
-          <select onchange="setPos(${i},'method',+this.value)">
+          <select onchange="setPos('${set}',${i},'method',+this.value)">
             ${opt(4,'Полный расчёт',p.method)}${opt(1,'Предоплата 100%',p.method)}
             ${opt(3,'Аванс',p.method)}${opt(7,'Оплата кредита',p.method)}
           </select></div>
@@ -677,10 +706,10 @@ function renderPos() {
 const opt = (v, t, cur) => `<option value="${v}" ${v == cur ? 'selected' : ''}>${t}</option>`;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-const total = () => positions.reduce((s, p) => s + p.qty * p.price, 0);
+const posTotal = set => POS[set].reduce((s, p) => s + p.qty * p.price, 0);
 
 function payAll(which) {
-  $(which === 'cash' ? 'cash' : 'card').value = rub(total());
+  $(which === 'cash' ? 'cash' : 'card').value = rub(posTotal('sale'));
   $(which === 'cash' ? 'card' : 'cash').value = '0';
   draw();
 }
@@ -688,6 +717,41 @@ function syncCorr() {
   $('c-cash').value = rub($('c-total').value);
   $('c-card').value = '0';
   draw();
+}
+
+// --- форма чека коррекции: разметка под версию ФФД ---
+// Признак расчёта у чека коррекции: на ФФД 1.05 разрешены только приход и
+// расход (как у живой кассы), на 1.2 — все четыре, как у обычного чека.
+const CORR_OPS = [[1, 'Приход'], [2, 'Возврат прихода'], [3, 'Расход'], [4, 'Возврат расхода']];
+
+function renderCorrOps() {
+  const sel = $('c-op');
+  const prev = sel.value || '1';
+  const list = isFfd12() ? CORR_OPS : CORR_OPS.filter(([v]) => v === 1 || v === 3);
+  sel.innerHTML = list.map(([v, t]) => opt(v, t, prev)).join('');
+  if (!list.some(([v]) => String(v) === prev)) sel.value = String(list[0][0]);
+}
+
+// Перерисовывает разметку формы коррекции под текущую ffdVersion — вызывается
+// при смене версии ФФД (status()), при смене типа коррекции (для подсветки
+// обязательности номера документа) и один раз при загрузке страницы. Значения
+// уже заполненных полей не трогает — только видимость, подписи и список
+// вариантов «Признак расчёта».
+function renderCorrForm() {
+  const ffd12 = isFfd12();
+  renderCorrOps();
+  $('c-op-note').hidden = ffd12;
+  $('c-positions-block').hidden = !ffd12;
+  $('c-desc-row').hidden = ffd12;
+  $('c-fpd-row').hidden = !ffd12;
+  $('c-date-label').textContent = ffd12
+    ? 'Дата корректируемого расчёта' : 'Дата документа основания';
+  $('c-total').readOnly = ffd12;
+  if (ffd12) $('c-total').value = rub(posTotal('corr'));
+  const numRequired = ffd12 && $('c-type').value === '1';
+  $('c-num-label').classList.toggle('corr-required', numRequired);
+  $('c-num-label').textContent = numRequired
+    ? 'Номер документа основания (обязателен)' : 'Номер документа основания';
 }
 
 // --- режим и служебные панели ---
@@ -738,6 +802,10 @@ const center = t => ' '.repeat(Math.max(0, Math.floor((W - t.length) / 2))) + t;
 const line = () => '-'.repeat(W);
 
 function draw() {
+  // Сумма расчёта на 1.2 — не то, что вводят руками, а то, что сходится
+  // с позициями: держим поле в форме и в предпросмотре синхронными на
+  // каждую правку позиции, а не только по явному действию человека.
+  if (isFfd12()) $('c-total').value = rub(posTotal('corr'));
   const t = mode === 'sale' ? drawSale() : drawCorr();
   $('tape').textContent = t;
 }
@@ -745,17 +813,17 @@ function draw() {
 function drawSale() {
   const ops = { 1: 'ПРИХОД', 2: 'ВОЗВРАТ ПРИХОДА', 3: 'РАСХОД', 4: 'ВОЗВРАТ РАСХОДА' };
   const L = [center('КАССОВЫЙ ЧЕК'), center(ops[$('op').value]), line()];
-  positions.forEach((p, i) => {
+  POS.sale.forEach((p, i) => {
     L.push(`${i + 1}. ${p.name || '(без названия)'}`);
     L.push(pad(`  ${p.qty} x ${rub(p.price)}`, rub(p.qty * p.price)));
   });
-  if (!positions.length) L.push('  нет позиций');
+  if (!POS.sale.length) L.push('  нет позиций');
   L.push(line());
-  L.push(pad('ИТОГ', rub(total())));
+  L.push(pad('ИТОГ', rub(posTotal('sale'))));
   const c = +$('cash').value, e = +$('card').value;
   if (c) L.push(pad('  НАЛИЧНЫМИ', rub(c)));
   if (e) L.push(pad('  ЭЛЕКТРОННЫМИ', rub(e)));
-  const change = c + e - total();
+  const change = c + e - posTotal('sale');
   if (change > 0.001) L.push(pad('  СДАЧА', rub(change)));
   if ($('fpd').value.trim()) L.push('Доп. реквизит чека: ' + $('fpd').value.trim());
   L.push(line());
@@ -764,6 +832,10 @@ function drawSale() {
 }
 
 function drawCorr() {
+  return isFfd12() ? drawCorr12() : drawCorr105();
+}
+
+function drawCorr105() {
   const ops = { 1: 'ПРИХОД', 2: 'ВОЗВРАТ ПРИХОДА', 3: 'РАСХОД', 4: 'ВОЗВРАТ РАСХОДА' };
   const L = [center('КАССОВЫЙ ЧЕК'), center('КОРРЕКЦИИ'), center(ops[$('c-op').value]), line()];
   L.push($('c-type').value === '0' ? 'ТИП: САМОСТОЯТЕЛЬНО' : 'ТИП: ПО ПРЕДПИСАНИЮ');
@@ -772,6 +844,28 @@ function drawCorr() {
   if ($('c-num').value) L.push('НОМЕР ДОК.: ' + $('c-num').value);
   L.push(line());
   L.push(pad('ИТОГ', rub($('c-total').value)));
+  const c = +$('c-cash').value, e = +$('c-card').value;
+  if (c) L.push(pad('  НАЛИЧНЫМИ', rub(c)));
+  if (e) L.push(pad('  ЭЛЕКТРОННЫМИ', rub(e)));
+  L.push(line());
+  L.push(snoName($('c-sno').value));
+  return L.join('\n');
+}
+
+function drawCorr12() {
+  const ops = { 1: 'ПРИХОД', 2: 'ВОЗВРАТ ПРИХОДА', 3: 'РАСХОД', 4: 'ВОЗВРАТ РАСХОДА' };
+  const L = [center('КАССОВЫЙ ЧЕК'), center('КОРРЕКЦИИ'), center(ops[$('c-op').value]), line()];
+  L.push($('c-type').value === '0' ? 'ТИП: САМОСТОЯТЕЛЬНО' : 'ТИП: ПО ПРЕДПИСАНИЮ');
+  POS.corr.forEach((p, i) => {
+    L.push(`${i + 1}. ${p.name || '(без названия)'}`);
+    L.push(pad(`  ${p.qty} x ${rub(p.price)}`, rub(p.qty * p.price)));
+  });
+  if (!POS.corr.length) L.push('  нет позиций');
+  if ($('c-date').value) L.push('ДАТА РАСЧЁТА: ' + $('c-date').value.split('-').reverse().join('.'));
+  if ($('c-num').value) L.push('НОМЕР ДОК.: ' + $('c-num').value);
+  if ($('c-fpd').value.trim()) L.push('ФПД ИСХОДНОГО ЧЕКА: ' + $('c-fpd').value.trim());
+  L.push(line());
+  L.push(pad('ИТОГ', rub(posTotal('corr'))));
   const c = +$('c-cash').value, e = +$('c-card').value;
   if (c) L.push(pad('  НАЛИЧНЫМИ', rub(c)));
   if (e) L.push(pad('  ЭЛЕКТРОННЫМИ', rub(e)));
@@ -798,16 +892,20 @@ function ask(title, body, sum, yesLabel, fn) {
 }
 
 function confirmSale() {
-  if (!positions.length) return say('В чеке нет ни одной позиции', 'err');
-  if (positions.some(p => !p.name.trim())) return say('У каждой позиции должно быть наименование', 'err');
-  if (total() <= 0) return say('Сумма чека — ноль. Проверьте цены и количество.', 'err');
+  if (!POS.sale.length) return say('В чеке нет ни одной позиции', 'err');
+  if (POS.sale.some(p => !p.name.trim())) return say('У каждой позиции должно быть наименование', 'err');
+  if (posTotal('sale') <= 0) return say('Сумма чека — ноль. Проверьте цены и количество.', 'err');
   const paid = +$('cash').value + +$('card').value;
-  if (paid < total() - 0.001) return say(`Оплата ${rub(paid)} меньше итога ${rub(total())}`, 'err');
-  ask('Пробить кассовый чек?', `Позиций: ${positions.length}. Чек будет напечатан и уйдёт в ОФД.`,
-      rub(total()) + ' ₽', 'Пробить', sendSale);
+  if (paid < posTotal('sale') - 0.001) return say(`Оплата ${rub(paid)} меньше итога ${rub(posTotal('sale'))}`, 'err');
+  ask('Пробить кассовый чек?', `Позиций: ${POS.sale.length}. Чек будет напечатан и уйдёт в ОФД.`,
+      rub(posTotal('sale')) + ' ₽', 'Пробить', sendSale);
 }
 
 function confirmCorr() {
+  return isFfd12() ? confirmCorr12() : confirmCorr105();
+}
+
+function confirmCorr105() {
   const t = +$('c-total').value;
   if (t <= 0) return say('Укажите сумму расчёта', 'err');
   if (!$('c-desc').value.trim()) return say('Укажите описание коррекции', 'err');
@@ -815,6 +913,26 @@ function confirmCorr() {
   if (Math.abs(paid - t) > 0.01) return say(`Суммы оплаты (${rub(paid)}) не сходятся с итогом (${rub(t)})`, 'err');
   ask('Пробить чек коррекции?',
       'Документ уйдёт в ОФД и не может быть отменён. Убедитесь, что основание указано верно.',
+      rub(t) + ' ₽', 'Пробить коррекцию', sendCorr);
+}
+
+// Проверки повторяют серверные для ветки ФФД 1.2 (см. app.py): непустые
+// позиции, у каждой — наименование, дата корректируемого расчёта указана,
+// номер документа основания — только при типе «по предписанию».
+function confirmCorr12() {
+  if (!POS.corr.length) return say('В чеке коррекции нет ни одной позиции', 'err');
+  if (POS.corr.some(p => !p.name.trim())) return say('У каждой позиции должно быть наименование', 'err');
+  if (!$('c-date').value) return say('Укажите дату корректируемого расчёта', 'err');
+  if ($('c-type').value === '1' && !$('c-num').value.trim())
+    return say('При коррекции по предписанию укажите номер документа основания', 'err');
+  const t = posTotal('corr');
+  // Сервер сверяет оплату с суммой расчёта на обеих ветках ФФД — пусть
+  // человек узнает о расхождении здесь, а не отказом после обращения к кассе.
+  const paid = +$('c-cash').value + +$('c-card').value;
+  if (Math.abs(paid - t) > 0.01)
+    return say(`Оплата ${rub(paid)} не сходится с итогом ${rub(t)}`, 'err');
+  ask('Пробить чек коррекции?',
+      `Позиций: ${POS.corr.length}. Документ уйдёт в ОФД и не может быть отменён.`,
       rub(t) + ' ₽', 'Пробить коррекцию', sendCorr);
 }
 
@@ -863,7 +981,7 @@ async function _sendSale() {
   try {
     const r = await post('/api/receipt', {
       op_type: +$('op').value,
-      positions: positions.map(p => ({
+      positions: POS.sale.map(p => ({
         name: p.name, qty: p.qty, price: p.price, vat: p.vat,
         payment_subject: p.subject, payment_method: p.method
       })),
@@ -875,25 +993,49 @@ async function _sendSale() {
         (r.change > 0 ? `, сдача ${rub(r.change)} ₽` : ''), 'ok');
     saveLastFpd(String(r.fiscal_sign));
     refreshFpdButton();
-    positions = []; addPos();
+    POS.sale = []; addPos('sale');
     $('cash').value = 0; $('card').value = 0; $('fpd').value = '';
     draw(); status(); loadLog();
   } catch (e) { say(e.message, 'err'); }
 }
 
+// Тело запроса на 1.05 — без изменений: одна сумма руками, описание
+// основания. На 1.2 сервер сверяет total с суммой позиций и не знает
+// реквизита 1177 (reason_description) — его на этой ветке не отправляем.
+function corrBody105() {
+  return {
+    correction_type: +$('c-type').value,
+    op_type: +$('c-op').value,
+    total: +$('c-total').value,
+    cash: +$('c-cash').value, electronic: +$('c-card').value,
+    tax_system: $('c-sno').value,
+    reason_description: $('c-desc').value,
+    reason_date: $('c-date').value || new Date().toISOString().slice(0, 10),
+    reason_number: $('c-num').value || 'б/н'
+  };
+}
+
+function corrBody12() {
+  return {
+    correction_type: +$('c-type').value,
+    op_type: +$('c-op').value,
+    total: posTotal('corr'),
+    cash: +$('c-cash').value, electronic: +$('c-card').value,
+    tax_system: $('c-sno').value,
+    reason_date: $('c-date').value,
+    reason_number: $('c-num').value || 'б/н',
+    positions: POS.corr.map(p => ({
+      name: p.name, qty: p.qty, price: p.price, vat: p.vat,
+      payment_subject: p.subject, payment_method: p.method
+    })),
+    corrected_fpd: $('c-fpd').value.trim()
+  };
+}
+
 async function sendCorr() { return guard('Пробиваю чек коррекции…', _sendCorr); }
 async function _sendCorr() {
   try {
-    const r = await post('/api/correction', {
-      correction_type: +$('c-type').value,
-      op_type: +$('c-op').value,
-      total: +$('c-total').value,
-      cash: +$('c-cash').value, electronic: +$('c-card').value,
-      tax_system: $('c-sno').value,
-      reason_description: $('c-desc').value,
-      reason_date: $('c-date').value || new Date().toISOString().slice(0, 10),
-      reason_number: $('c-num').value || 'б/н'
-    });
+    const r = await post('/api/correction', isFfd12() ? corrBody12() : corrBody105());
     say(`Чек коррекции пробит. ФД № ${r.fd_number}, фискальный признак ${r.fiscal_sign}`, 'ok');
     status(); loadLog();
   } catch (e) { say(e.message, 'err'); }
@@ -1063,6 +1205,15 @@ async function status() {
       return;
     }
     lamp.className = 'lamp on';
+    // Версия ФФД для формы чека коррекции — тот же источник, что у защёлки
+    // перед печатью. Не определилась (null/нет поля) — считаем 1.05. Форму
+    // перерисовываем только при смене версии, чтобы не стирать набранные
+    // человеком данные на каждый тик опроса.
+    const newFfd = s.ffd || '1.05';
+    if (newFfd !== ffdVersion) {
+      ffdVersion = newFfd;
+      renderCorrForm();
+    }
     $('link').textContent = s.busy ? 'касса занята' : (s.demo ? 'эмулятор' : 'касса на связи');
     $('g-shift').textContent = s.shift_open ? `\u2116 ${s.shift_number} открыта` : 'закрыта';
     $('g-shift').className = s.shift_open ? '' : 'warn';
@@ -1389,7 +1540,8 @@ async function saveCfg() {
 // --- старт ---
 
 $('c-date').value = new Date().toISOString().slice(0, 10);
-addPos();
+addPos('sale');
+renderCorrForm();
 loadJournal();
 renderJournal();
 refreshFpdButton();

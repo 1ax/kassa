@@ -563,9 +563,18 @@ def status():
         fn = k.fn_status()
         ofd = k.ofd_status()
         long = k.long_status()
+        try:
+            ffd = _ffd_current(k)
+        except Exception:
+            # Версия ФФД тут — только для формы чека коррекции и для общей
+            # картины, не для решения о печати (та защёлка вызывает
+            # _ffd_current сама, отдельно, перед конкретным документом).
+            # Неизвестная версия не повод ронять всю приборную панель.
+            ffd = None
         return {
             "online": True,
             "demo": DEMO,
+            "ffd": ffd,
             "mode": short["mode_name"],
             "mode_code": short["mode"],
             "receipt_open": short["receipt_open"],

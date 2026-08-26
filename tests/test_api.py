@@ -876,3 +876,26 @@ def test_service_отдаёт_ffd_blocked(client):
     kassa_app.SERVICE_CACHE["at"] = 0.0
     demo.DemoKKT.state["ffd"] = 4
     assert client.get("/api/service").json()["ffd_blocked"] is True
+
+
+def test_api_status_отдаёт_ffd_согласованный_с_состоянием_кассы(client):
+    """Форма чека коррекции в интерфейсе берёт версию ФФД отсюда же, откуда
+    защёлка перед печатью — источник должен быть один и тот же."""
+    demo.DemoKKT.state["ffd"] = 2
+    assert client.get("/api/status").json()["ffd"] == "1.05"
+
+    kassa_app.STATUS_CACHE["value"] = None
+    kassa_app.STATUS_CACHE["at"] = 0.0
+    kassa_app.FFD_STATE["value"] = None
+    kassa_app.FFD_STATE["at"] = None
+    demo.DemoKKT.state["ffd"] = 4
+    assert client.get("/api/status").json()["ffd"] == "1.2"
+
+
+def test_api_status_не_падает_когда_версия_ффд_не_определяется(client):
+    """state["ffd"] = None — как касса, не поддерживающая FF0Eh (и резервный
+    путь по длине FF09h тоже не даёт ответа): /api/status не должен падать."""
+    demo.DemoKKT.state["ffd"] = None
+    r = client.get("/api/status")
+    assert r.status_code == 200
+    assert r.json()["ffd"] is None
