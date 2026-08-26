@@ -1407,8 +1407,8 @@ async function loadService(retried = false) {
       : `${s.reregistrations} (отчётов в архиве ФН: ${s.registrations}, первый — регистрация)`;
     $('svc-fp-counters-row').hidden = (s.fp_counters === null || s.fp_counters === undefined);
     $('svc-fp-counters').textContent = s.fp_counters || '—';
-    updateFfdButton(s.ffd_by_length);
     ffdBlocked = !!s.ffd_blocked;
+    updateFfdButton(ffdBlocked);
     $('ffd-blocked').hidden = !ffdBlocked;
     refreshGoButtons();
   } catch (e) {
@@ -1417,19 +1417,16 @@ async function loadService(retried = false) {
 }
 
 // --- кнопка «Переход на ФФД 1.2» в левой колонке ---
-// Подпись и подсветка берутся из ffd_by_length, который и так приезжает
-// в /api/service при каждой загрузке панели обслуживания — отдельного
-// запроса к кассе ради одной кнопки заводить незачем.
+// Подпись и подсветка берутся из того же ffd_blocked, что и плашка над
+// кнопками «Пробить»: он посчитан по фактической версии ФФД (тег 1209),
+// а грубый ffd_by_length не отличает 1.1 от 1.2. Смотреть на by_length —
+// значит объявлять «новее программы» кассу, для которой ветка печати
+// давно написана; ровно этим кнопка и врала после появления ветки 1.2.
 
-function updateFfdButton(byLength) {
+function updateFfdButton(blocked) {
   const btn = $('ffd-btn');
-  if (byLength === '1.1/1.2') {
-    btn.textContent = 'ФФД кассы новее программы';
-    btn.classList.add('warn');
-  } else {
-    btn.textContent = 'Переход на ФФД 1.2';
-    btn.classList.remove('warn');
-  }
+  btn.textContent = blocked ? 'ФФД кассы новее программы' : 'Переход на ФФД 1.2';
+  btn.classList.toggle('warn', !!blocked);
 }
 
 // --- панель «Переход на ФФД 1.2» ---
