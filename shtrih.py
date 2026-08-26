@@ -72,6 +72,7 @@ CMD_SHIFT_PARAMS = b"\xff\x40"   # Запрос параметров текущ�
 CMD_CLOSE_RECEIPT_V2 = b"\xff\x45"   # Закрытие чека расширенное, вариант 2
 CMD_OPERATION_V2 = b"\xff\x46"       # Операция V2 (позиция чека)
 CMD_CORRECTION_V2 = b"\xff\x4a"      # Сформировать чек коррекции V2
+CMD_OPERATION_TLV = b"\xff\x4d"      # Передать TLV структуру, привязанную к операции
 
 # Команды, при которых ККТ печатает: ответ приходит после протяжки бумаги,
 # ждать надо дольше обычного.
@@ -176,6 +177,10 @@ TAG_FFD_FN = 1190        # максимальная версия ФФД, кот�
 # Значения версий ФФД (приказ ФНС) — числовой код тега -> обозначение
 FFD_VERSIONS = {1: "1.0", 2: "1.05", 3: "1.1", 4: "1.2"}
 
+# Тег 2108 «мера количества предмета расчёта», обязателен в ФФД 1.2 (МР ФНС);
+# в 1.05 такого реквизита нет. «Штука, единица» — 0.
+MEASURE_PIECE = 0
+
 # Типы фискальных документов (ответ FF01h, байт «текущий документ»)
 FN_DOCUMENTS = {
     0x00: "нет открытого документа",
@@ -276,6 +281,14 @@ def corrected_receipt_tlv(fpd: str) -> bytes:
     низкая («рекомендовано»), отсутствие тега нарушением не является.
     """
     return tlv(1192, fpd.encode("cp1251", errors="replace"))
+
+
+def measure_tlv(code: int = MEASURE_PIECE) -> bytes:
+    """
+    Тег 2108 «Мера количества предмета расчёта» — обязателен в электронной
+    форме (Э-1) в ФФД 1.2, в 1.05 отсутствует. По умолчанию — «штука, единица».
+    """
+    return tlv(2108, bytes([code]))
 
 
 def build_frame(command: bytes, data: bytes = b"") -> bytes:
@@ -911,6 +924,10 @@ class KKT:
     def send_tlv(self, structure: bytes) -> Response:
         """Команда FF0Ch «Передать произвольную TLV структуру»."""
         return self.execute(CMD_SEND_TLV, password(self.admin_password) + structure)
+
+    def operation_tlv(self, structure: bytes) -> Response:
+        """Команда FF4Dh «Передать произвольную TLV структуру, привязанную к операции»."""
+        return self.execute(CMD_OPERATION_TLV, password(self.admin_password) + structure)
 
     # -- чек коррекции --
 

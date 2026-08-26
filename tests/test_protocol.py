@@ -245,6 +245,26 @@ def test_send_tlv_шлёт_ff0c_с_паролем_сисадмина_и_стру
     assert frame[4:-1] == shtrih.password(88) + structure
 
 
+# --- Мера количества (тег 2108, ФФД 1.2) и FF4Dh --------------------------
+
+def test_measure_tlv_даёт_тег_2108_штука():
+    # Тег 2108 = 0x083C LE, длина значения 1, значение 0 («штука, единица»)
+    assert shtrih.measure_tlv() == bytes.fromhex("3c080100") + b"\x00"
+
+
+def test_operation_tlv_шлёт_ff4d_под_паролем_сисадмина_длиной_6_плюс_n():
+    k = shtrih.KKT("stub", 0, operator_password=77, admin_password=88)
+    k._sock = FakeSocket([b"\xff\x4d\x00"])
+    structure = shtrih.measure_tlv()
+    k.operation_tlv(structure)
+    frame = frames_sent(k)[0]
+    assert frame[2:4] == shtrih.CMD_OPERATION_TLV
+    assert frame[4:-1] == shtrih.password(88) + structure
+    n = len(structure)
+    assert frame[1] == 6 + n            # CMD(2) + пароль(4) + структура(N)
+    assert len(frame) == 9 + n          # плюс STX, байт длины и LRC
+
+
 # --- Время и дата (21h/22h/23h) -------------------------------------------
 
 def test_set_time_шлёт_кадр_21h_с_временем_обычными_байтами():

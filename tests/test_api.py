@@ -42,6 +42,7 @@ def client(tmp_path, monkeypatch):
         clock_offset=-268.0, date_pending=None, last_document_at=None,
         ffd=2,
     )
+    demo.DemoKKT.state["ops"] = []
     # base_url важен: сервер принимает только локальное имя хоста,
     # а TestClient по умолчанию представляется как «testserver».
     return TestClient(kassa_app.app, base_url="http://127.0.0.1")
@@ -658,19 +659,67 @@ def test_ффд_1_05_печатает_чек_и_коррекцию_как_ран
     assert r.json()["ok"] is True
 
 
-def test_ффд_1_2_отбивает_чек_и_коррекцию(client):
+def test_ффд_1_2_печатает_чек_но_отбивает_коррекцию(client):
+    """Ветка кассового чека под 1.2 есть, ветки чека коррекции под 1.2 нет."""
     demo.DemoKKT.state["ffd"] = 4
     client.post("/api/shift/open")
 
     r = client.post("/api/receipt", json={
         "positions": [{"name": "Стоянка", "qty": 1, "price": 10}], "cash": 10})
-    assert r.status_code == 409
-    assert "1.2" in r.json()["detail"]
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
 
     r = client.post("/api/correction", json={
         "total": 100, "cash": 100, "reason_description": "не пробит чек"})
     assert r.status_code == 409
     assert "1.2" in r.json()["detail"]
+
+
+def test_ффд_1_2_отправляет_тег_2108_перед_каждой_позицией(client):
+    """FF4Dh с тегом 2108 уходит перед FF46h на каждую позицию чека."""
+    demo.DemoKKT.state["ffd"] = 4
+    client.post("/api/shift/open")
+    r = client.post("/api/receipt", json={
+        "positions": [
+            {"name": "Стоянка", "qty": 1, "price": 10},
+            {"name": "Мойка", "qty": 2, "price": 5},
+        ],
+        "cash": 20,
+    })
+    assert r.status_code == 200
+    ops = demo.DemoKKT.state["ops"]
+    assert [kind for kind, _ in ops] == ["tlv", "operation", "tlv", "operation"]
+    for kind, payload in ops:
+        if kind == "tlv":
+            tag = int.from_bytes(payload[0:2], "little")
+            assert tag == 2108
+
+
+def test_ффд_1_05_не_отправляет_тег_2108(client):
+    client.post("/api/shift/open")
+    r = client.post("/api/receipt", json={
+        "positions": [{"name": "Стоянка", "qty": 1, "price": 10}], "cash": 10})
+    assert r.status_code == 200
+    assert not any(kind == "tlv" for kind, _ in demo.DemoKKT.state["ops"])
+
+
+def test_ффд_1_2_коррекция_отбивается_и_не_двигает_номер_фд(client):
+    demo.DemoKKT.state["ffd"] = 4
+    client.post("/api/shift/open")
+    last_fd_before = demo.DemoKKT.state["last_fd"]
+    r = client.post("/api/correction", json={
+        "total": 100, "cash": 100, "reason_description": "не пробит чек"})
+    assert r.status_code == 409
+    assert "ффд" in r.json()["detail"].lower()
+    assert demo.DemoKKT.state["last_fd"] == last_fd_before
+
+
+def test_api_ffd_отдаёт_code_ffd_со_списком_версий_и_карточку_code_ok(client):
+    body = client.get("/api/ffd").json()
+    assert "1.05" in body["code_ffd"]
+    assert "1.2" in body["code_ffd"]
+    code_card = next(c for c in body["checks"] if c["key"] == "code")
+    assert code_card["state"] == "ok"
 
 
 def test_ффд_1_2_не_блокирует_смену_и_х_отчёт_и_аннулирование(client):

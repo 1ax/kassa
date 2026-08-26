@@ -41,6 +41,10 @@ class DemoKKT:
         # (касса отвечает 0x37 «команда не поддерживается», как и на живой
         # кассе для FF0Eh). Переключается тестами защёлки перед печатью.
         "ffd": 2,
+        # Фактический порядок команд позиции чека — тестам защёлки на 1.2
+        # нужно видеть, что operation_tlv уходит перед operation, а не факт
+        # самих вызовов по отдельности.
+        "ops": [],
     }
 
     def __init__(self, *args, **kwargs):
@@ -263,6 +267,7 @@ class DemoKKT:
     def operation(self, *, name: str, qty: float, price: float, **kw):
         if not self.state["receipt_open"]:
             raise shtrih.KKTError(0x67, "Чек не открыт")
+        self.state["ops"].append(("operation", name))
         self._note(f"позиция: {name} {qty} x {price}")
 
     def close_receipt(self, *, cash: float = 0, electronic: float = 0, **kw) -> dict:
@@ -277,6 +282,10 @@ class DemoKKT:
 
     def send_tlv(self, structure: bytes):
         self._note(f"передан реквизит, {len(structure)} байт")
+
+    def operation_tlv(self, structure: bytes):
+        self.state["ops"].append(("tlv", structure))
+        self._note(f"передан реквизит операции, {len(structure)} байт")
 
     def correction(self, *, total: float, reason_description: str = "",
                    reason_date: date | None = None, **kw) -> dict:
