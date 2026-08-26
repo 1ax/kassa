@@ -18,6 +18,9 @@ __pycache__/
 .idea/
 .vscode/
 
+# Снимки страниц, логи консоли и скриншоты браузерной проверки интерфейса
+.playwright-mcp/
+
 # Лог, который пишет лаунчер из Программ
 kassa.log
 packaging/Kassa.iconset/
