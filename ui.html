@@ -576,12 +576,19 @@
         <dl id="ffd-checks" style="margin:0"></dl>
       </fieldset>
       <fieldset style="margin-top:20px">
+        <legend>Готовность программы</legend>
+        <p style="font-size:11px;color:var(--dim);line-height:1.5;margin:0 0 10px">
+          «Написано» не значит «проверено»: на живой кассе не прошёл ни один
+          документ по ФФД 1.2 и не пройдёт, пока не обновлена прошивка ККТ.
+        </p>
+        <dl id="ffd-program" style="margin:0"></dl>
+      </fieldset>
+      <fieldset style="margin-top:20px">
         <legend>Риски</legend>
         <p style="font-size:12px;color:var(--dim);line-height:1.6;margin:0">
           Обратного пути нет: ФФД повышается только вверх, а прошивка с поддержкой 1.2 —
           отдельная сборка. На время работ касса не работает. Нужна перерегистрация
           в ЛК ФНС, которая расходует одну перерегистрацию из конечного числа у ФН.
-          Ветки печати чеков под ФФД 1.2 в программе пока нет.
         </p>
       </fieldset>
       <fieldset>
@@ -1437,6 +1444,22 @@ function renderFfdChecks(checks) {
     </div>`).join('');
 }
 
+function renderFfdProgram(program) {
+  $('ffd-program').innerHTML = program.map(p => {
+    const mark = p.written ? '✓' : '—';
+    const label = !p.written
+      ? 'не написано'
+      : (p.verified ? 'проверено на кассе' : 'написано, на кассе не проверено');
+    const dim = !p.written;
+    return `
+    <div class="gauge">
+      <dt>${esc(p.title)}</dt>
+      <dd style="${dim ? 'color:var(--dim)' : ''}">${esc(mark)} ${esc(label)}</dd>
+      ${p.note ? `<div style="font-size:11px;color:var(--dim);margin-top:3px">${esc(p.note)}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
 function renderFfdSteps(s) {
   const fnCheck = (s.checks || []).find(c => c.key === 'fn_expiry');
   const expiry = fnCheck ? fnCheck.value : 'неизвестно';
@@ -1466,6 +1489,7 @@ async function loadFfd(retried = false) {
     $('ffd-verdict').style.display = 'none';
     $('ffd-unsupported').style.display = 'none';
     $('ffd-checks').innerHTML = '';
+    $('ffd-program').innerHTML = '';
     $('ffd-steps').innerHTML = '';
     $('ffd-error').textContent = text;
     $('ffd-error').style.display = '';
@@ -1509,6 +1533,7 @@ async function loadFfd(retried = false) {
     $('ffd-verdict').style.display = '';
     $('ffd-unsupported').style.display = s.unsupported ? '' : 'none';
     renderFfdChecks(s.checks || []);
+    renderFfdProgram(s.program || []);
     renderFfdSteps(s);
   } catch (e) {
     fail('Панель перехода на ФФД 1.2 недоступна');

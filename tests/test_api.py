@@ -851,6 +851,40 @@ def test_api_ffd_отдаёт_code_ffd_со_списком_версий_и_ка�
     assert code_card["state"] == "ok"
 
 
+def test_api_ffd_отдаёт_чек_лист_готовности_программы(client):
+    body = client.get("/api/ffd").json()
+    program = body["program"]
+    receipt = next(p for p in program if p["key"] == "receipt")
+    correction = next(p for p in program if p["key"] == "correction")
+    assert receipt["written"] is True and receipt["verified"] is False
+    assert correction["written"] is True and correction["verified"] is False
+    vat = next(p for p in program if p["key"] == "vat_5_7")
+    assert vat["written"] is False
+
+
+def test_api_ffd_written_у_correction_выводится_из_correction_ffd_а_не_вписан(
+    client, monkeypatch
+):
+    monkeypatch.setattr(kassa_app, "CORRECTION_FFD", ("1.05",))
+    kassa_app.FFD_CACHE["value"] = None
+    kassa_app.FFD_CACHE["at"] = 0.0
+    body = client.get("/api/ffd").json()
+    correction = next(p for p in body["program"] if p["key"] == "correction")
+    assert correction["written"] is False
+    code_card = next(c for c in body["checks"] if c["key"] == "code")
+    assert "чек коррекции" not in code_card["value"]
+    kassa_app.FFD_CACHE["value"] = None
+    kassa_app.FFD_CACHE["at"] = 0.0
+
+
+def test_api_ffd_карточка_code_упоминает_чек_и_коррекцию_на_текущих_кортежах(client):
+    body = client.get("/api/ffd").json()
+    code_card = next(c for c in body["checks"] if c["key"] == "code")
+    assert "кассовый чек" in code_card["value"]
+    assert "чек коррекции" in code_card["value"]
+    assert code_card["state"] == "ok"
+
+
 def test_ффд_1_2_не_блокирует_смену_и_х_отчёт_и_аннулирование(client):
     demo.DemoKKT.state["ffd"] = 4
     assert client.post("/api/shift/open").status_code == 200
