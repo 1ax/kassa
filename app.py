@@ -751,6 +751,12 @@ def service():
         unconfirmed = k.unconfirmed_documents()
         days = days_left(expiry["expiry"])
         by_length = _ffd_by_length(fiscal["data_length"])
+        try:
+            current_ffd = _ffd_current(k)
+        except Exception:
+            # Панель обслуживания не должна падать из-за нечитаемой версии
+            # ФФД — как и /api/status, откатываемся на резервную прикидку.
+            current_ffd = None
         # Число перерегистраций команда 11h не отдаёт: смещение 36-39 её
         # ответа, где спецификация обещает эти счётчики, на живой кассе —
         # нули (раскладка не подтверждена, см. long_status()). Настоящий
@@ -780,10 +786,16 @@ def service():
             # Печать останавливает защёлка (_refuse_if_ffd_mismatch), это поле —
             # только чтобы интерфейс показал плашку и заблокировал кнопки
             # заранее, не дожидаясь отказа при попытке пробить чек.
-            # «1.1/1.2» здесь остаётся незнакомой строкой, хотя «1.2» уже есть
-            # в CODE_FFD: по длине ответа FF09h 1.1 от 1.2 не отличить,
-            # а ветки под 1.1 в программе нет.
-            "ffd_blocked": by_length is not None and by_length not in CODE_FFD,
+            # Источник тот же, что у защёлки и у /api/status: тег 1209
+            # (_ffd_current). Резервная прикидка по длине FF09h остаётся на
+            # случай, когда точную версию прочитать нечем: сама по себе она
+            # печать не разрешает — строкой «1.1/1.2» отвечают и 1.1 (под
+            # которую ветки нет), и 1.2 (под которую ветка есть), а по длине
+            # ответа их не различить.
+            "ffd_blocked": (
+                current_ffd not in CODE_FFD if current_ffd is not None
+                else by_length is not None and by_length not in CODE_FFD
+            ),
             "registrations": registrations,
             "reregistrations": reregistrations,
             "fp_counters": fp_counters,

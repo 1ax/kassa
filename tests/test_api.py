@@ -870,12 +870,43 @@ def test_неизвестная_ффд_не_блокирует_печать(clie
 
 
 def test_service_отдаёт_ffd_blocked(client):
-    assert client.get("/api/service").json()["ffd_blocked"] is False
-
+    # 1.05 (код 2) — ветка есть, плашки нет.
+    demo.DemoKKT.state["ffd"] = 2
     kassa_app.SERVICE_CACHE["value"] = None
     kassa_app.SERVICE_CACHE["at"] = 0.0
+    kassa_app.FFD_STATE["value"] = None
+    kassa_app.FFD_STATE["at"] = None
+    assert client.get("/api/service").json()["ffd_blocked"] is False
+
+    # 1.2 (код 4) — ветка есть, плашки нет: по точной версии из тега 1209,
+    # а не по грубой прикидке «1.1/1.2» из резерва.
     demo.DemoKKT.state["ffd"] = 4
+    kassa_app.SERVICE_CACHE["value"] = None
+    kassa_app.SERVICE_CACHE["at"] = 0.0
+    kassa_app.FFD_STATE["value"] = None
+    kassa_app.FFD_STATE["at"] = None
+    assert client.get("/api/service").json()["ffd_blocked"] is False
+
+    # 1.1 (код 3) — ветки нет, плашка есть.
+    demo.DemoKKT.state["ffd"] = 3
+    kassa_app.SERVICE_CACHE["value"] = None
+    kassa_app.SERVICE_CACHE["at"] = 0.0
+    kassa_app.FFD_STATE["value"] = None
+    kassa_app.FFD_STATE["at"] = None
     assert client.get("/api/service").json()["ffd_blocked"] is True
+
+
+def test_service_не_блокирует_печать_когда_ффд_не_определяется(client):
+    """Версию определить не удалось вовсе — печатаем как раньше (решение
+    владельца), поэтому и плашка панели обслуживания не загорается."""
+    demo.DemoKKT.state["ffd"] = None
+    kassa_app.SERVICE_CACHE["value"] = None
+    kassa_app.SERVICE_CACHE["at"] = 0.0
+    kassa_app.FFD_STATE["value"] = None
+    kassa_app.FFD_STATE["at"] = None
+    r = client.get("/api/service")
+    assert r.status_code == 200
+    assert r.json()["ffd_blocked"] is False
 
 
 def test_api_status_отдаёт_ffd_согласованный_с_состоянием_кассы(client):
