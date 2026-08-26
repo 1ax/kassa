@@ -629,3 +629,87 @@ def test_ff0e_шлёт_номер_тега_двумя_байтами_little_endi
     assert frame[2:4] == shtrih.CMD_FN_REG_PARAM
     # DATA = пароль(4) + номер отчёта(1) + тег(2, little-endian)
     assert frame[-3:-1] == bytes([0xB9, 0x04])
+
+
+# --- Таблицы ККТ (1Fh/2Dh/2Eh) ---------------------------------------------
+#
+# Спецификация «Протокол работы ККТ с ФН», v.1.18: чтение таблицы (1Fh),
+# запрос структуры таблицы (2Dh), запрос структуры поля (2Eh). Все три —
+# читающие: ничего не печатают, состояния ККТ не меняют.
+
+def test_чтение_таблицы_1f_имеет_длину_9_байт_и_несёт_поля_на_своих_местах():
+    k = shtrih.KKT("stub", 0, admin_password=88)
+    k._sock = FakeSocket([b"\x1f\x00" + bytes([42])])
+    k.read_table(table=19, row=300, field=2)
+    frame = frames_sent(k)[0]
+    assert frame[2:3] == shtrih.CMD_READ_TABLE
+    assert frame[1] == 9                       # CMD(1) + пароль(4) + табл(1) + ряд(2) + поле(1)
+    assert len(frame) == 12                    # плюс STX, байт длины и LRC
+    assert frame[3:7] == shtrih.password(88)
+    assert frame[7] == 19
+    assert frame[8:10] == (300).to_bytes(2, "little")
+    assert frame[10] == 2
+
+
+def test_запрос_структуры_таблицы_2d_имеет_длину_6_байт():
+    k = shtrih.KKT("stub", 0, admin_password=30)
+    name = shtrih.text_field("Таблица", 40)
+    k._sock = FakeSocket([b"\x2d\x00" + name + (2).to_bytes(2, "little") + bytes([3])])
+    k.table_structure(19)
+    frame = frames_sent(k)[0]
+    assert frame[2:3] == shtrih.CMD_TABLE_STRUCT
+    assert frame[1] == 6                       # CMD(1) + пароль(4) + номер таблицы(1)
+    assert len(frame) == 9
+    assert frame[3:7] == shtrih.password(30)
+    assert frame[7] == 19
+
+
+def test_запрос_структуры_поля_2e_имеет_длину_7_байт():
+    k = shtrih.KKT("stub", 0, admin_password=30)
+    name = shtrih.text_field("Поле", 40)
+    k._sock = FakeSocket([b"\x2e\x00" + name + bytes([1, 0])])
+    k.field_structure(19, 2)
+    frame = frames_sent(k)[0]
+    assert frame[2:3] == shtrih.CMD_FIELD_STRUCT
+    assert frame[1] == 7                       # CMD(1) + пароль(4) + табл(1) + поле(1)
+    assert len(frame) == 10
+    assert frame[3:7] == shtrih.password(30)
+    assert frame[7] == 19
+    assert frame[8] == 2
+
+
+def test_table_structure_разбирает_имя_рядов_и_полей():
+    name = shtrih.text_field("Параметры ОФД", 40)
+    data = name + (7).to_bytes(2, "little") + bytes([4])
+    k = kkt_with([b"\x2d\x00" + data])
+    st = k.table_structure(19)
+    assert st == {"name": "Параметры ОФД", "rows": 7, "fields": 4}
+
+
+def test_field_structure_для_bin_отдаёт_size_min_max():
+    name = shtrih.text_field("Порт сервера ОФД", 40)
+    size = 2
+    data = name + bytes([0, size]) + (0).to_bytes(size, "little") + (65535).to_bytes(size, "little")
+    k = kkt_with([b"\x2e\x00" + data])
+    fs = k.field_structure(19, 2)
+    assert fs == {"name": "Порт сервера ОФД", "type": "bin", "size": 2, "min": 0, "max": 65535}
+
+
+def test_field_structure_для_char_min_max_none():
+    name = shtrih.text_field("Адрес сервера ОФД", 40)
+    data = name + bytes([1, 40])
+    k = kkt_with([b"\x2e\x00" + data])
+    fs = k.field_structure(19, 1)
+    assert fs == {"name": "Адрес сервера ОФД", "type": "char", "size": 40, "min": None, "max": None}
+
+
+def test_read_table_отдаёт_сырые_байты_без_интерпретации():
+    k = kkt_with([b"\x1f\x00" + bytes([0x1F, 0x1F])])
+    assert k.read_table(19, 1, 2) == bytes([0x1F, 0x1F])
+
+
+def test_короткий_ответ_2d_поднимает_protocolerror():
+    # Обещано 43 байта данных (имя 40 + рядов 2 + полей 1), пришло меньше.
+    k = kkt_with([b"\x2d\x00" + bytes(10)])
+    with pytest.raises(shtrih.ProtocolError, match="2Dh"):
+        k.table_structure(19)

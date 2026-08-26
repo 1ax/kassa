@@ -83,6 +83,21 @@
     font-family: var(--sans); font-size: 11px; color: var(--brass); margin-top: 3px;
   }
 
+  /* Строка списка таблиц ККТ. Не .gauge: там dt — мелкая подпись, а dd —
+     крупное значение, и для этого списка порядок читался вывернутым —
+     название таблицы выходило мельче, чем число рядов. Здесь название
+     основное, размеры таблицы — подпись под ним. */
+  .tbl-item {
+    display: block; width: 100%; text-align: left; cursor: pointer;
+    background: none; border: 1px solid transparent; border-radius: 3px;
+    padding: 7px 9px; margin-bottom: 2px;
+    color: var(--text); font-family: var(--sans); font-size: 13px;
+  }
+  .tbl-item:hover { border-color: var(--line); }
+  .tbl-item[aria-pressed="true"] { border-color: var(--brass); color: var(--brass); }
+  .tbl-item .tbl-no { font-family: var(--mono); color: var(--dim); margin-right: 7px; }
+  .tbl-item .sub { display: block; font-size: 11px; color: var(--dim); margin-top: 3px; }
+
   .rule { height: 1px; background: var(--line); margin: 10px 0; }
 
   .rail-group { display: grid; gap: 4px; }
@@ -329,6 +344,7 @@
       <button class="minor" data-panel="journal" aria-pressed="false" onclick="showPanel('journal')">Журнал событий</button>
       <button class="minor" data-panel="service" aria-pressed="false" onclick="showPanel('service')">Обслуживание</button>
       <button class="minor" id="ffd-btn" data-panel="ffd" aria-pressed="false" onclick="showPanel('ffd')">Переход на ФФД 1.2</button>
+      <button class="minor" data-panel="tables" aria-pressed="false" onclick="showPanel('tables')">Таблицы кассы</button>
       <button class="minor" data-panel="wire" aria-pressed="false" onclick="showPanel('wire')">Журнал обмена</button>
       <button class="minor" data-panel="conn" aria-pressed="false" onclick="showPanel('conn')">Подключение</button>
     </div>
@@ -607,6 +623,27 @@
       <button class="minor" onclick="loadFfd()">Обновить</button>
     </section>
 
+    <section class="panel" id="panel-tables" hidden>
+      <h2>Таблицы кассы<button class="panel-close" onclick="showPanel(null)">× закрыть</button></h2>
+      <p style="font-size:11px;color:var(--dim);line-height:1.5;margin:8px 0">
+        Панель только читает таблицы ККТ (команды 1Fh/2Dh/2Eh) — записи
+        в таблицы в программе нет вовсе, испортить настройки кассы отсюда
+        нельзя.
+      </p>
+      <div id="tables-error" class="msg err" style="display:none;margin-bottom:10px"></div>
+      <div id="tables-list"></div>
+      <button class="minor" onclick="loadTables()">Обновить список</button>
+      <fieldset id="tables-detail" style="margin-top:16px;display:none">
+        <legend id="tables-detail-title">Поля таблицы</legend>
+        <div class="row" style="grid-template-columns:110px auto;margin-bottom:10px">
+          <div><label for="tables-row">Ряд</label>
+            <input type="number" id="tables-row" class="num" value="1" min="1"></div>
+          <div style="align-self:end"><button class="minor" onclick="loadTableFields()">Показать</button></div>
+        </div>
+        <div id="tables-fields" style="font-family:var(--mono);font-size:11px;line-height:1.6"></div>
+      </fieldset>
+    </section>
+
     <section class="panel" id="panel-wire" hidden>
       <h2>Журнал обмена с кассой<button class="panel-close" onclick="showPanel(null)">× закрыть</button></h2>
       <p style="font-size:11px;color:var(--dim);margin:8px 0">
@@ -788,6 +825,7 @@ function showPanel(p) {
   syncPanes();
   if (panel === 'service') loadService();
   if (panel === 'ffd') loadFfd();
+  if (panel === 'tables') loadTables();
   if (panel === 'wire') loadLog();
 }
 
@@ -801,7 +839,7 @@ function syncPanes() {
   document.querySelector('.modes').hidden = !form;
   $('m-sale').setAttribute('aria-pressed', mode === 'sale');
   $('m-corr').setAttribute('aria-pressed', mode === 'corr');
-  ['journal', 'service', 'ffd', 'wire', 'conn'].forEach(name => {
+  ['journal', 'service', 'ffd', 'tables', 'wire', 'conn'].forEach(name => {
     $('panel-' + name).hidden = panel !== name;
   });
   document.querySelectorAll('[data-panel]').forEach(b =>
@@ -1547,6 +1585,119 @@ async function loadFfd(retried = false) {
     $('ffd-vat-22').style.display = s.vat_22_written === false ? '' : 'none';
   } catch (e) {
     fail('Панель перехода на ФФД 1.2 недоступна');
+  }
+}
+
+// --- панель «Таблицы кассы» (1Fh/2Dh/2Eh, только чтение) ------------------
+
+let tablesSelected = null;
+
+function tablesFail(text) {
+  $('tables-detail').style.display = 'none';
+  $('tables-list').innerHTML = '';
+  $('tables-error').textContent = text;
+  $('tables-error').style.display = '';
+}
+
+function renderTablesList(list) {
+  $('tables-list').innerHTML = list.map(t => `
+    <button type="button" class="tbl-item" aria-pressed="false"
+            data-number="${t.number}" onclick="selectTable(${t.number})">
+      <span class="tbl-no">№${t.number}</span>${esc(t.name)}
+      <span class="sub">рядов: ${t.rows}, полей: ${t.fields}</span>
+    </button>`).join('') || '<p style="font-size:11px;color:var(--dim)">Касса не ответила ни по одной таблице</p>';
+  markSelectedTable();
+}
+
+// Какая строка списка сейчас открыта. Без подсветки клик по строке ничем
+// не отличается от промаха мимо неё.
+function markSelectedTable() {
+  document.querySelectorAll('#tables-list .tbl-item').forEach(b =>
+    b.setAttribute('aria-pressed', String(+b.dataset.number === tablesSelected)));
+}
+
+async function loadTables(retried = false) {
+  try {
+    const r = await fetch('/api/tables');
+    // См. пояснение в loadService(): 404 здесь значит «сервер старее
+    // интерфейса», а не «нет связи с кассой».
+    if (r.status === 404) {
+      tablesFail('Запущенный сервер старее интерфейса: выключите и запустите кассу заново');
+      return;
+    }
+    if (!r.ok) { tablesFail(`Сервер ответил ошибкой ${r.status}`); return; }
+    const s = await r.json();
+    if (s.busy && !s.online) {
+      if (!retried) {
+        $('tables-error').textContent = 'Касса занята другой операцией, повторяю…';
+        $('tables-error').style.display = '';
+        setTimeout(() => loadTables(true), 2000);
+      } else {
+        $('tables-error').textContent =
+          'Касса занята другой операцией. Нажмите «Обновить список», когда освободится.';
+        $('tables-error').style.display = '';
+      }
+      return;
+    }
+    if (!s.online) {
+      tablesFail(s.error || 'Нет связи с кассой');
+      return;
+    }
+    if (s.busy) {
+      $('tables-error').textContent =
+        'Показан последний известный список: касса сейчас занята другой операцией.';
+      $('tables-error').style.display = '';
+    } else {
+      $('tables-error').style.display = 'none';
+    }
+    renderTablesList(s.tables || []);
+  } catch (e) {
+    tablesFail('Панель «Таблицы кассы» недоступна');
+  }
+}
+
+function selectTable(number) {
+  tablesSelected = number;
+  markSelectedTable();
+  const detail = $('tables-detail');
+  detail.style.display = '';
+  $('tables-detail-title').textContent = `Поля таблицы №${number}`;
+  // На каждое поле уходит по две команды к кассе, ответ не мгновенный.
+  // Без заглушки клик выглядит так, будто ничего не произошло.
+  $('tables-fields').textContent = 'Читаю таблицу…';
+  // Поля раскрываются ниже сгиба: без прокрутки отклика не видно вовсе,
+  // и о том, что надо листать, приходится догадываться.
+  detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  loadTableFields();
+}
+
+async function loadTableFields() {
+  if (tablesSelected === null) return;
+  const row = Math.max(1, +$('tables-row').value || 1);
+  $('tables-fields').textContent = 'Читаю…';
+  try {
+    const r = await fetch(`/api/tables/${tablesSelected}?row=${row}`);
+    if (r.status === 404) {
+      $('tables-fields').textContent =
+        'Запущенный сервер старее интерфейса: выключите и запустите кассу заново';
+      return;
+    }
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      $('tables-fields').textContent = body.detail || `Сервер ответил ошибкой ${r.status}`;
+      return;
+    }
+    const s = await r.json();
+    $('tables-detail-title').textContent = `№${s.number} ${s.name} — ряд ${s.row} из ${s.rows}`;
+    $('tables-fields').innerHTML = (s.fields || []).map(f => `
+      <div style="margin-bottom:6px">
+        <div><span style="color:var(--dim)">№${f.number}</span> ${esc(f.name)}
+          <span style="color:var(--dim)">(${esc(f.type)})</span></div>
+        <div>${esc(String(f.value))}<span style="color:var(--dim);font-size:10px">
+          &nbsp;&nbsp;${esc(f.raw)}</span></div>
+      </div>`).join('') || '<p style="color:var(--dim)">В таблице нет полей</p>';
+  } catch (e) {
+    $('tables-fields').textContent = 'Не удалось прочитать поля таблицы';
   }
 }
 

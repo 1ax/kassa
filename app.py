@@ -96,6 +96,12 @@ FFD_STATE: dict = {"at": None, "value": None}
 MODEL_STATE: dict = {"at": None, "value": None}
 MODEL_TTL = 600.0
 
+# Структура таблиц ККТ (2Dh) — меняется только с прошивкой, дёргать кассу
+# на каждый показ панели «Таблицы кассы» незачем. ЗНАЧЕНИЯ полей (1Fh) не
+# кэшируются вовсе: панель должна показывать то, что в кассе прямо сейчас.
+TABLES_CACHE: dict = {"at": None, "value": None}
+TABLES_TTL = 600.0
+
 # Версии ФФД, под которые в программе есть готовая ветка печати КАССОВОГО
 # ЧЕКА. Ветка 1.05 остаётся навсегда, ветка 1.2 добавлена рядом с ней, а не
 # вместо.
@@ -1172,6 +1178,100 @@ def ffd():
     FFD_CACHE["value"] = value
     FFD_CACHE["at"] = time.monotonic()
     return value
+
+
+@app.get("/api/tables")
+def tables():
+    """
+    Панель «Таблицы кассы»: список таблиц ККТ (номер, название, число рядов
+    и полей), команда 2Dh. Читающая команда, ничего не печатает.
+
+    Панель открывается вручную, не по таймеру, а структура таблиц меняется
+    только с прошивкой — поэтому кэш держим долго, как у /api/ffd. Таблицы,
+    на которых касса ответила ошибкой, считаем несуществующими и молча
+    пропускаем: сколько их есть на конкретной прошивке, заранее не известно.
+    """
+    if not DEMO and not load_config()["host"].strip():
+        return {"online": False, "demo": False, "no_host": True,
+                "error": "Адрес кассы не задан"}
+
+    now = time.monotonic()
+    cached = TABLES_CACHE["value"]
+    if (cached is not None and TABLES_CACHE["at"] is not None
+            and now - TABLES_CACHE["at"] < TABLES_TTL):
+        return cached
+
+    def read(k):
+        found = []
+        for number in range(1, 31):
+            try:
+                info = k.table_structure(number)
+            except shtrih.KKTError:
+                continue
+            found.append({"number": number, **info})
+        return {"online": True, "demo": DEMO, "tables": found}
+
+    try:
+        value = with_kkt(read, wait=SERVICE_WAIT, record=False)
+    except Busy:
+        if cached is not None:
+            return {**cached, "busy": True}
+        return {"online": False, "busy": True, "demo": DEMO,
+                "error": "Касса занята другой операцией"}
+    except (OSError, socket.timeout, shtrih.ProtocolError) as exc:
+        value = {"online": False, "demo": DEMO, "error": str(exc)}
+    except Exception as exc:
+        raise _fail(exc)
+
+    TABLES_CACHE["value"] = value
+    TABLES_CACHE["at"] = time.monotonic()
+    return value
+
+
+@app.get("/api/tables/{number}")
+def table_detail(number: int, row: int = 1):
+    """
+    Поля одной таблицы ККТ для одного ряда: структура поля (2Eh) и значение
+    (1Fh) на каждое поле. Читающие команды, ничего не печатают.
+
+    Значения полей не кэшируются: панель должна показывать то, что в кассе
+    прямо сейчас, а не то, что было десять минут назад.
+    """
+    if not 1 <= number <= 255:
+        raise HTTPException(400, "Номер таблицы вне диапазона 1..255")
+    if row < 1:
+        raise HTTPException(400, "Номер ряда должен быть не меньше 1")
+
+    def read(k):
+        info = k.table_structure(number)
+        fields = []
+        for field_number in range(1, info["fields"] + 1):
+            fs = k.field_structure(number, field_number)
+            raw = k.read_table(number, row, field_number)
+            if fs["type"] == "char":
+                value = raw.split(b"\x00")[0].decode("cp1251", errors="replace").strip()
+            else:
+                value = int.from_bytes(raw, "little")
+            fields.append({
+                "number": field_number,
+                "name": fs["name"],
+                "type": fs["type"],
+                "size": fs["size"],
+                "min": fs["min"],
+                "max": fs["max"],
+                "value": value,
+                "raw": raw.hex().upper(),
+            })
+        return {
+            "online": True, "demo": DEMO,
+            "number": number, "name": info["name"], "rows": info["rows"],
+            "row": row, "fields": fields,
+        }
+
+    try:
+        return with_kkt(read, wait=SERVICE_WAIT, record=False)
+    except Exception as exc:
+        raise _fail(exc)
 
 
 @app.get("/api/device")

@@ -43,10 +43,13 @@ NAK = 0x15
 CMD_SHORT_STATUS = b"\x10"       # Короткий запрос состояния
 CMD_LONG_STATUS = b"\x11"        # Запрос состояния ККТ
 CMD_BEEP = b"\x13"               # Гудок
+CMD_READ_TABLE = b"\x1f"         # Чтение таблицы
 CMD_SET_TIME = b"\x21"           # Программирование времени
 CMD_SET_DATE = b"\x22"           # Программирование даты
 CMD_CONFIRM_DATE = b"\x23"       # Подтверждение программирования даты
 CMD_CUT = b"\x25"                # Отрезка чека
+CMD_TABLE_STRUCT = b"\x2d"       # Запрос структуры таблицы
+CMD_FIELD_STRUCT = b"\x2e"       # Запрос структуры поля
 CMD_X_REPORT = b"\x40"           # Суточный отчёт без гашения (X)
 CMD_Z_REPORT = b"\x41"           # Суточный отчёт с гашением (Z)
 CMD_ERROR_NAME = b"\x6b"         # Возврат названия ошибки
@@ -658,6 +661,93 @@ class KKT:
             "shift_open": d[0] == 1,
             "shift_number": int.from_bytes(d[1:3], "little"),
             "receipt_number": int.from_bytes(d[3:5], "little"),
+        }
+
+    def read_table(self, table: int, row: int, field: int) -> bytes:
+        """
+        Команда 1Fh. Читающая: ничего не печатает, состояния ККТ не меняет.
+
+        Запрос: пароль сисадмина (4 байта) + таблица (1 байт) + ряд
+        (2 байта LE) + поле (1 байт). Ответ: код ошибки + значение поля.
+
+        Отдаёт значение СЫРЬЁМ (r.data), без интерпретации: тип поля
+        (BIN или CHAR) известен только из ответа команды 2Eh (см.
+        field_structure), решать это за вызывающего нельзя.
+        """
+        data = (
+            password(self.admin_password)
+            + bytes([table])
+            + row.to_bytes(2, "little")
+            + bytes([field])
+        )
+        r = self.execute(CMD_READ_TABLE, data)
+        return r.data
+
+    def table_structure(self, table: int) -> dict:
+        """
+        Команда 2Dh. Читающая: ничего не печатает, состояния ККТ не меняет.
+
+        Раскладка ответа (спецификация v.1.18):
+            0-39   название таблицы, CP1251, более короткое обрывается
+                   нулевым байтом
+            40-41  количество рядов, uint16 LE
+            42     количество полей
+        """
+        data = password(self.admin_password) + bytes([table])
+        r = self.execute(CMD_TABLE_STRUCT, data)
+        d = r.data
+        if len(d) < 43:
+            raise ProtocolError(
+                f"Ответ 2Dh короче ожидаемого: {len(d)} байт, нужно не меньше 43"
+            )
+        name = d[0:40].split(b"\x00")[0].decode("cp1251", errors="replace")
+        return {
+            "name": name,
+            "rows": int.from_bytes(d[40:42], "little"),
+            "fields": d[42],
+        }
+
+    def field_structure(self, table: int, field: int) -> dict:
+        """
+        Команда 2Eh. Читающая: ничего не печатает, состояния ККТ не меняет.
+
+        Раскладка ответа (спецификация v.1.18):
+            0-39   название поля, CP1251, более короткое обрывается
+                   нулевым байтом
+            40     тип поля: 0 — BIN, 1 — CHAR
+            41     количество байт X
+            42..   минимальное значение (X байт, только для BIN)
+            ..     максимальное значение (X байт, только для BIN)
+        Для CHAR минимума и максимума в ответе нет вовсе — разбираем их
+        только для BIN, по фактической длине X.
+        """
+        data = password(self.admin_password) + bytes([table]) + bytes([field])
+        r = self.execute(CMD_FIELD_STRUCT, data)
+        d = r.data
+        if len(d) < 42:
+            raise ProtocolError(
+                f"Ответ 2Eh короче заголовка поля: {len(d)} байт, нужно не меньше 42"
+            )
+        name = d[0:40].split(b"\x00")[0].decode("cp1251", errors="replace")
+        field_type = "bin" if d[40] == 0 else "char"
+        size = d[41]
+        min_value = None
+        max_value = None
+        if field_type == "bin":
+            need = 42 + 2 * size
+            if len(d) < need:
+                raise ProtocolError(
+                    f"Ответ 2Eh короче обещанных границ BIN-поля: "
+                    f"{len(d)} байт, нужно не меньше {need}"
+                )
+            min_value = int.from_bytes(d[42:42 + size], "little")
+            max_value = int.from_bytes(d[42 + size:42 + 2 * size], "little")
+        return {
+            "name": name,
+            "type": field_type,
+            "size": size,
+            "min": min_value,
+            "max": max_value,
         }
 
     def fn_status(self) -> dict:

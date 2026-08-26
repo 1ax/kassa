@@ -42,6 +42,9 @@ def client(tmp_path, monkeypatch):
     # в закэшированное значение TTL следующего теста.
     kassa_app.MODEL_STATE["value"] = None
     kassa_app.MODEL_STATE["at"] = None
+    # Кэш структуры таблиц (/api/tables) — та же история, что у MODEL_STATE.
+    kassa_app.TABLES_CACHE["value"] = None
+    kassa_app.TABLES_CACHE["at"] = None
     demo.DemoKKT.state.update(
         shift_open=False, shift_number=6, receipt_number=0,
         last_fd=24, receipt_open=False,
@@ -1062,3 +1065,38 @@ def test_api_status_не_падает_когда_версия_ффд_не_опр
     r = client.get("/api/status")
     assert r.status_code == 200
     assert r.json()["ffd"] is None
+
+
+# --- Таблицы ККТ (/api/tables) ---------------------------------------------
+
+def test_список_таблиц_отдаёт_таблицы_1_19_и_23(client):
+    r = client.get("/api/tables")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["online"] is True
+    numbers = {t["number"] for t in body["tables"]}
+    assert {1, 19, 23} <= numbers
+    table19 = next(t for t in body["tables"] if t["number"] == 19)
+    assert table19["name"] == "Параметры ОФД"
+    assert table19["rows"] == 1
+    assert table19["fields"] == 2
+
+
+def test_поля_таблицы_19_отдают_char_строкой_bin_числом_и_raw_у_обоих(client):
+    r = client.get("/api/tables/19", params={"row": 1})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["number"] == 19
+    assert body["row"] == 1
+    fields = {f["number"]: f for f in body["fields"]}
+    assert fields[1]["type"] == "char"
+    assert fields[1]["value"] == "demo.ofd.example"
+    assert isinstance(fields[1]["raw"], str) and fields[1]["raw"]
+    assert fields[2]["type"] == "bin"
+    assert fields[2]["value"] == 7443
+    assert isinstance(fields[2]["raw"], str) and fields[2]["raw"]
+
+
+def test_несуществующая_таблица_не_роняет_сервер(client):
+    r = client.get("/api/tables/250")
+    assert r.status_code in (400, 404)

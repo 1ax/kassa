@@ -26,6 +26,53 @@ import shtrih
 _FFD_CODE_BY_VERSION = {version: code for code, version in shtrih.FFD_VERSIONS.items()}
 _DEMO_FFD_CODE = _FFD_CODE_BY_VERSION.get(os.environ.get("KASSA_DEMO_FFD", ""), 2)
 
+# Таблицы ККТ для панели «Таблицы кассы» (команды 1Fh/2Dh/2Eh).
+# СОДЕРЖИМОЕ ВЫДУМАНО для эмулятора и с живой кассы не снималось — в отличие
+# от прочих ответов DemoKKT ниже, где раскладка следует реальным кадрам.
+# Нужны только чтобы панель было на чём посмотреть без подключённой ККТ.
+# У каждой таблицы одна заполненная строка (row=1); запрос другого номера
+# ряда, таблицы или поля эмулирует отказ кассы, как и полагается по протоколу.
+DEMO_TABLES = {
+    1: {
+        "name": "Тип и режимы ККТ",
+        "rows": 1,
+        "fields": {
+            1: {"name": "Тип ККТ", "type": "bin", "size": 1,
+                "min": 0, "max": 255, "value": 0},
+            2: {"name": "Наименование организации", "type": "char", "size": 40,
+                "value": "ООО «Демо»"},
+        },
+    },
+    19: {
+        "name": "Параметры ОФД",
+        "rows": 1,
+        "fields": {
+            1: {"name": "Адрес сервера ОФД", "type": "char", "size": 40,
+                "value": "demo.ofd.example"},
+            2: {"name": "Порт сервера ОФД", "type": "bin", "size": 2,
+                "min": 0, "max": 65535, "value": 7443},
+        },
+    },
+    23: {
+        # Настоящий состав этой таблицы неизвестен: раскладку мы не читали
+        # ни с кассы, ни из спецификации. Поэтому поля названы нейтрально —
+        # выдуманное название не должно выглядеть как знание. Единственный
+        # достоверный факт: в поле 11 бывают прочерки, и тогда нужна
+        # прошивка из папки «для ККТ без ключей» (предупреждение из центра
+        # загрузок РБ-Софт).
+        "name": "Лицензии",
+        "rows": 1,
+        "fields": {
+            **{
+                n: {"name": f"Лицензия {n}", "type": "bin", "size": 1,
+                    "min": 0, "max": 1, "value": 1 if n <= 3 else 0}
+                for n in range(1, 11)
+            },
+            11: {"name": "Ключи", "type": "char", "size": 16, "value": "----"},
+        },
+    },
+}
+
 
 class DemoKKT:
     """Заглушка кассы. Интерфейс — как у shtrih.KKT, поведение — правдоподобное."""
@@ -149,6 +196,35 @@ class DemoKKT:
     def ofd_status(self) -> dict:
         return {"connected": True, "has_message": False, "waiting_receipt": False,
                 "queue_length": 0, "first_document": 0}
+
+    def table_structure(self, table: int) -> dict:
+        t = DEMO_TABLES.get(table)
+        if t is None:
+            raise shtrih.KKTError(0x50, "Неверный номер таблицы")
+        return {"name": t["name"], "rows": t["rows"], "fields": len(t["fields"])}
+
+    def field_structure(self, table: int, field: int) -> dict:
+        t = DEMO_TABLES.get(table)
+        if t is None:
+            raise shtrih.KKTError(0x50, "Неверный номер таблицы")
+        f = t["fields"].get(field)
+        if f is None:
+            raise shtrih.KKTError(0x51, "Неверный номер поля")
+        return {"name": f["name"], "type": f["type"], "size": f["size"],
+                "min": f.get("min"), "max": f.get("max")}
+
+    def read_table(self, table: int, row: int, field: int) -> bytes:
+        t = DEMO_TABLES.get(table)
+        if t is None:
+            raise shtrih.KKTError(0x50, "Неверный номер таблицы")
+        if row != 1:
+            raise shtrih.KKTError(0x52, "Неверный номер ряда")
+        f = t["fields"].get(field)
+        if f is None:
+            raise shtrih.KKTError(0x51, "Неверный номер поля")
+        if f["type"] == "char":
+            return shtrih.text_field(f["value"], f["size"])
+        return int(f["value"]).to_bytes(f["size"], "little")
 
     def fn_expiry(self) -> dict:
         year = date.today().year + 2
