@@ -922,14 +922,13 @@ def test_api_ffd_смена_открыта_todo_закрыта_done(client):
     assert shift_step["state"] == "done"
 
 
-def test_api_ffd_registry_subscription_settlement_reregister_trial_всегда_manual(client):
+def test_api_ffd_subscription_settlement_reregister_trial_всегда_manual(client):
     for ffd_code in (2, 4):
         demo.DemoKKT.state["ffd"] = ffd_code
         kassa_app.FFD_CACHE["value"] = None
         kassa_app.FFD_CACHE["at"] = 0.0
         body = client.get("/api/ffd").json()
         steps = {s["key"]: s for s in body["steps"]}
-        assert steps["registry"]["state"] == "manual"
         assert steps["subscription"]["state"] == "manual"
         assert steps["settlement"]["state"] == "manual"
         assert steps["reregister"]["state"] == "manual"
@@ -940,6 +939,14 @@ def test_api_ffd_отдаёт_vat_5_7_written_и_не_отдаёт_program(clien
     body = client.get("/api/ffd").json()
     assert body["vat_5_7_written"] is False
     assert "program" not in body
+
+
+def test_api_ffd_модель_разрешена_фнс_со_ссылкой_на_приказ(client):
+    """Строка про реестр закрыта приказом ФНС, а не ждёт проверки владельцем."""
+    body = client.get("/api/ffd").json()
+    registry = next(s for s in body["steps"] if s["key"] == "registry")
+    assert registry["state"] == "done"
+    assert "АБ-7-20/782@" in registry["note"]
 
 
 def test_api_ffd_settlement_идёт_после_firmware_в_списке_шагов(client):
