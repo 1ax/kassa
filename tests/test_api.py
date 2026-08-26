@@ -317,6 +317,37 @@ def test_панель_обслуживания_работает_на_эмуля�
     assert body["registrations"] == 1         # в архиве ФН один отчёт — регистрация
     assert body["reregistrations"] == 0      # перерегистраций ещё не было
     assert body["fp_counters"] is None       # эмулятор отдаёт нули — на экран не выводим
+    assert body["license"] == "0100000000"   # 5 байт эмулятора hex в верхнем регистре
+
+
+def test_панель_обслуживания_переживает_отказ_кассы_на_чтении_лицензии(client, monkeypatch):
+    """1Dh — команда за пределами спецификации: эта прошивка на неизвестные
+    команды отвечает 0x37, как уже было с FF60h и FF63h. Отказ на ней не
+    должен ронять всю панель обслуживания — только license становится None."""
+    def отказ(self):
+        raise kassa_app.shtrih.KKTError(0x37, "Команда не поддерживается")
+
+    monkeypatch.setattr(demo.DemoKKT, "read_license", отказ)
+    r = client.get("/api/service")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["online"] is True
+    assert body["license"] is None
+    assert "0x37" in body["license_error"]
+    assert body["registrations"] == 1        # остальные поля панели на месте
+
+
+def test_панель_обслуживания_не_выдаёт_чужой_отказ_за_неподдержку(client, monkeypatch):
+    """Живая касса отказала на 1Dh — но выдавать любой отказ за 0x37 нельзя:
+    причина должна приходить с кассы, а не додумываться панелью."""
+    def отказ(self):
+        raise kassa_app.shtrih.KKTError(0x05, "Неверный пароль")
+
+    monkeypatch.setattr(demo.DemoKKT, "read_license", отказ)
+    body = client.get("/api/service").json()
+    assert body["license"] is None
+    assert "0x05" in body["license_error"]
+    assert "не поддерживается" not in body["license_error"]
 
 
 def test_панель_обслуживания_переживает_короткую_занятость(client):

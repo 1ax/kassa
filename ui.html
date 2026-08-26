@@ -569,6 +569,11 @@
           <dd id="svc-fp-counters">—</dd>
           <dd class="sub">Раскладка не подтверждена, сырые байты ответа 11h.</dd>
         </div>
+        <div class="gauge">
+          <dt>Лицензия ККТ</dt>
+          <dd id="svc-license">—</dd>
+          <dd class="sub" id="svc-license-note"></dd>
+        </div>
         <div class="gauge"><dt>Расхождение часов</dt><dd id="svc-drift" style="font-size:12px">—</dd></div>
         <div class="gauge"><dt>Скорость ухода</dt><dd id="svc-rate" style="font-size:12px">—</dd></div>
       </dl>
@@ -1369,11 +1374,13 @@ async function loadLog() {
 // таймеру приборной панели.
 
 const SVC_FIELDS = ['svc-expiry', 'svc-version', 'svc-fisc-at', 'svc-reg',
-                     'svc-sno', 'svc-fisc-fd', 'svc-unconfirmed', 'svc-registrations'];
+                     'svc-sno', 'svc-fisc-fd', 'svc-unconfirmed', 'svc-registrations',
+                     'svc-license'];
 
 async function loadService(retried = false) {
   const fail = (text) => {
     SVC_FIELDS.forEach(id => { $(id).textContent = '—'; $(id).className = ''; });
+    $('svc-license').style.color = '';
     $('svc-fp-counters-row').hidden = true;
     $('svc-error').textContent = text;
     $('svc-error').style.display = '';
@@ -1450,6 +1457,24 @@ async function loadService(retried = false) {
       : `${s.reregistrations} (отчётов в архиве ФН: ${s.registrations}, первый — регистрация)`;
     $('svc-fp-counters-row').hidden = (s.fp_counters === null || s.fp_counters === undefined);
     $('svc-fp-counters').textContent = s.fp_counters || '—';
+    if (s.license === null || s.license === undefined) {
+      // Причину отказа берём у кассы, а не додумываем: раньше здесь на любой
+      // отказ писалось «не поддерживается прошивкой», хотя код ошибки никто
+      // не смотрел.
+      $('svc-license').textContent = s.license_error || 'касса не ответила';
+      $('svc-license').style.color = 'var(--dim)';
+      $('svc-license-note').textContent =
+        'Эта прошивка команду 1Dh не знает — как FF60h и FF63h. Лицензии '
+        + 'и срок подписки смотреть на распечатке техпрогона или в Тесте '
+        + 'Драйвера: протоколом их отсюда не достать.';
+    } else {
+      $('svc-license').textContent = s.license;
+      $('svc-license').style.color = '';
+      $('svc-license-note').textContent =
+        'Что означают эти байты, неизвестно: команда 1Dh в спецификации '
+        + 'не описана и взята из открытого драйвера Штрих-М; расшифровать '
+        + 'можно, только сверив с тем, что печатает техпрогон.';
+    }
     ffdBlocked = !!s.ffd_blocked;
     updateFfdButton(ffdBlocked);
     $('ffd-blocked').hidden = !ffdBlocked;

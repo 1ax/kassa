@@ -561,6 +561,30 @@ def test_разбор_количества_неподтверждённых_фд
     assert k.unconfirmed_documents() == 0
 
 
+# --- Лицензия ККТ (1Dh, в спецификации нет) --------------------------------
+
+def test_чтение_лицензии_1d_имеет_длину_5_байт():
+    k = shtrih.KKT("stub", 0, admin_password=88)
+    k._sock = FakeSocket([b"\x1d\x00" + bytes([1, 2, 3, 4, 5])])
+    k.read_license()
+    frame = frames_sent(k)[0]
+    assert frame[2:3] == shtrih.CMD_READ_LICENSE
+    assert frame[1] == 5                       # CMD(1) + пароль(4)
+    assert len(frame) == 8                     # плюс STX, байт длины и LRC
+    assert frame[3:7] == shtrih.password(88)
+
+
+def test_чтение_лицензии_отдаёт_сырые_5_байт():
+    k = kkt_with([b"\x1d\x00" + bytes([0xAA, 0x01, 0x02, 0x03, 0x04])])
+    assert k.read_license() == bytes([0xAA, 0x01, 0x02, 0x03, 0x04])
+
+
+def test_короткий_ответ_1d_поднимает_protocolerror():
+    k = kkt_with([b"\x1d\x00" + bytes([1, 2, 3])])
+    with pytest.raises(shtrih.ProtocolError, match="5 байт"):
+        k.read_license()
+
+
 # --- Ошибки кассы --------------------------------------------------------
 
 def test_ненулевой_код_ошибки_превращается_в_исключение():

@@ -784,6 +784,21 @@ def service():
         # Первый отчёт в архиве — сама регистрация, а не перерегистрация:
         # вычитаем его, чтобы число сходилось с тем, что показывает ЛК ФНС.
         reregistrations = registrations - 1 if registrations else None
+        # Команды 1Dh нет в спецификации; отказ кассы не должен ронять всю
+        # панель обслуживания. Причину отказа отдаём как есть: 0x37 значит
+        # «прошивка не знает такой команды» (как уже было с FF60h и FF63h),
+        # а любой другой код — что-то иное, и выдавать его за неподдержку
+        # нельзя, иначе панель соврёт о причине.
+        license_hex = None
+        license_error = None
+        try:
+            license_hex = k.read_license().hex().upper()
+        except shtrih.KKTError as exc:
+            if exc.code == 0x37:
+                license_error = "команда не поддерживается прошивкой (0x37)"
+            else:
+                name = exc.name or "касса отказала"
+                license_error = f"{name} (код 0x{exc.code:02X})"
         return {
             "online": True,
             "demo": DEMO,
@@ -812,6 +827,8 @@ def service():
             "registrations": registrations,
             "reregistrations": reregistrations,
             "fp_counters": fp_counters,
+            "license": license_hex,
+            "license_error": license_error,
         }
 
     try:

@@ -43,6 +43,7 @@ NAK = 0x15
 CMD_SHORT_STATUS = b"\x10"       # Короткий запрос состояния
 CMD_LONG_STATUS = b"\x11"        # Запрос состояния ККТ
 CMD_BEEP = b"\x13"               # Гудок
+CMD_READ_LICENSE = b"\x1d"       # Прочитать лицензию (в спецификации нет)
 CMD_READ_TABLE = b"\x1f"         # Чтение таблицы
 CMD_SET_TIME = b"\x21"           # Программирование времени
 CMD_SET_DATE = b"\x22"           # Программирование даты
@@ -869,6 +870,33 @@ class KKT:
         """Команда FF3Fh. Количество ФД, на которые нет квитанции ОФД."""
         r = self.execute(CMD_UNCONFIRMED, password(self.admin_password))
         return int.from_bytes(r.data[0:2], "little")
+
+    def read_license(self) -> bytes:
+        """
+        Команда 1Dh. Чтение лицензии ККТ.
+
+        Читающая команда: ничего не печатает, состояния ККТ не меняет.
+        В спецификации протокола v.1.18 её нет вовсе — раскладка снята с
+        открытого драйвера Штрих-М (javapos_shtrih), класс
+        Source/Core/src/com/shtrih/fiscalprinter/command/ReadLicense.java,
+        как и типы документа чека коррекции.
+
+        Запрос: пароль системного администратора (4 байта). Индекса или
+        номера лицензии команда не принимает — один вызов возвращает одно
+        значение (SMFiscalPrinterImpl.readLicense зовёт команду без
+        параметров, кроме пароля).
+
+        Ответ: 5 байт. Что именно они означают — неизвестно. Похоже на
+        битовую маску лицензий (их у ККТ много, а команда отдаёт одно
+        значение), но это догадка, не проверенная на живой кассе — поэтому
+        расшифровку не делаем и отдаём байты как есть.
+        """
+        r = self.execute(CMD_READ_LICENSE, password(self.admin_password))
+        if len(r.data) < 5:
+            raise ProtocolError(
+                f"Ответ 1Dh короче ожидаемых 5 байт лицензии: {len(r.data)}"
+            )
+        return r.data[:5]
 
     def registration_param(self, tag: int, report: int = 1) -> bytes | None:
         """
