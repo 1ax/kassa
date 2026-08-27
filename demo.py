@@ -94,8 +94,15 @@ DEMO_TABLES = {
                  "value": "demo.skok.example"},
             14: {"name": "ЛСКОК ПОРТ", "type": "bin", "size": 2,
                  "min": 0, "max": 65535, "value": 8443},
+            # Образец ВЫДУМАН для эмулятора: настоящий в репозиторий не
+            # идёт (см. config.example.json, ключ license_sample). Разбор
+            # закреплён отдельным тестом на настоящем образце из config.json.
+            # Маска по смещению 8 здесь -- 0x000FFFF0 (биты 4..19): подписка
+            # с I кв. 2021 по IV кв. 2024, 16 кварталов.
             15: {"name": "ЛИЦЕНЗИИ ФУНКЦИЙ", "type": "char", "size": 128,
-                 "value": ""},
+                 "value": "00ff00ff00000000f0ff0f00000000001122334400000000"
+                          "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
+                          "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"},
             16: {"name": "ПОДПИСЬ ЛИЦЕНЗИЙ ФУНКЦИЙ", "type": "char",
                  "size": 128, "value": ""},
             17: {"name": "СКОК log", "type": "char", "size": 32, "value": ""},

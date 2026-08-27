@@ -350,6 +350,34 @@ def test_панель_обслуживания_не_выдаёт_чужой_от
     assert "не поддерживается" not in body["license_error"]
 
 
+def test_панель_обслуживания_разбирает_функциональные_лицензии(client):
+    """Таблица 23 поле 15 -- отдельная история от read_license (1Dh): читается
+    существующей read_table (1Fh), эмулятор отдаёт выдуманный, но структурно
+    правильный образец (см. demo.py, DEMO_TABLES[23])."""
+    body = client.get("/api/service").json()
+    assert body["license_functions"] == demo.DEMO_TABLES[23]["fields"][15]["value"]
+    assert body["subscription"] == {
+        "from": "01.01.2021", "to": "31.12.2024", "quarters": 16,
+    }
+
+
+def test_панель_обслуживания_переживает_отказ_кассы_на_чтении_лицензий_функций(client, monkeypatch):
+    """Отказ read_table на поле 15 -- отдельный от read_license путь, и он
+    тоже не должен ронять всю панель обслуживания."""
+    def отказ(self, table, row, field):
+        raise kassa_app.shtrih.KKTError(0x50, "Неверный номер таблицы")
+
+    monkeypatch.setattr(demo.DemoKKT, "read_table", отказ)
+    r = client.get("/api/service")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["online"] is True
+    assert body["license_functions"] is None
+    assert body["subscription"] is None
+    assert body["license_functions_note"]
+    assert body["registrations"] == 1        # остальная панель на месте
+
+
 def test_панель_обслуживания_переживает_короткую_занятость(client):
     """
     Гонка при загрузке страницы: опрос статуса на мгновение забирает замок

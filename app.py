@@ -799,6 +799,20 @@ def service():
             else:
                 name = exc.name or "касса отказала"
                 license_error = f"{name} (код 0x{exc.code:02X})"
+        # Поле 15 таблицы 23 — функциональные лицензии (подписка на
+        # обновление ПО в их числе). Читается уже существующей read_table
+        # (1Fh), отдельно от read_license (1Dh) — это разные истории.
+        # Отказ чтения не должен ронять панель, как и с 1Dh выше.
+        license_functions = None
+        license_functions_note = None
+        subscription = None
+        try:
+            licenses = shtrih.parse_function_licenses(k.read_table(23, 1, 15))
+            license_functions = licenses["hex"]
+            license_functions_note = licenses["note"]
+            subscription = licenses["subscription"]
+        except shtrih.KKTError as exc:
+            license_functions_note = f"касса отказала (код 0x{exc.code:02X})"
         return {
             "online": True,
             "demo": DEMO,
@@ -829,6 +843,9 @@ def service():
             "fp_counters": fp_counters,
             "license": license_hex,
             "license_error": license_error,
+            "license_functions": license_functions,
+            "license_functions_note": license_functions_note,
+            "subscription": subscription,
         }
 
     try:

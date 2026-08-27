@@ -11,7 +11,9 @@
 именно она в своё время и подтвердила смещение поля.
 """
 
+import json
 from datetime import date, time
+from pathlib import Path
 
 import pytest
 
@@ -737,3 +739,74 @@ def test_короткий_ответ_2d_поднимает_protocolerror():
     k = kkt_with([b"\x2d\x00" + bytes(10)])
     with pytest.raises(shtrih.ProtocolError, match="2Dh"):
         k.table_structure(19)
+
+
+# --- Функциональные лицензии (таблица 23, поле 15) -------------------------
+#
+# Настоящий образец поля 15 хранится только в config.json (ключ
+# license_sample), который не коммитится: там ИНН и заводской номер конкретной
+# кассы через сам факт активных лицензий не светятся напрямую, но образец
+# всё равно снят с живого аппарата, поэтому в репозиторий он не идёт (см.
+# CLAUDE.md). Без него тест ниже пропускается, а не выдумывает кадр — именно
+# выдуманный кадр в своё время пропустил все смещения в первой версии проекта.
+
+def test_разбор_подписки_на_реальном_образце_из_config():
+    cfg_path = Path(__file__).resolve().parent.parent / "config.json"
+    if not cfg_path.exists():
+        pytest.skip("config.json нет: реального образца поля 15 нет под рукой")
+    sample = json.loads(cfg_path.read_text(encoding="utf-8")).get("license_sample", "")
+    if not sample:
+        pytest.skip("в config.json нет ключа license_sample с образцом поля 15")
+    licenses = shtrih.parse_function_licenses(sample)
+    assert licenses["subscription"]["from"] == "01.01.2020"
+    assert licenses["subscription"]["to"] == "31.03.2026"
+    assert licenses["subscription"]["quarters"] == 25
+
+
+def _license_frame(mask: int) -> str:
+    """
+    Три восьмибайтовые записи (offset 0, 8, 16 -- значащие только младшие
+    4 байта каждой) + 40 байт подписи = 64 байта = 128 hex-символов.
+    Запись по смещению 8 несёт маску кварталов; 0 и 16 не разобраны и здесь
+    остаются нулями -- это не образец с кассы, а синтетика на само правило.
+    """
+    record1 = mask.to_bytes(4, "little") + bytes(4)
+    return (bytes(8) + record1 + bytes(8) + bytes(40)).hex()
+
+
+def test_разбор_лицензий_сплошная_маска_не_с_нулевого_бита():
+    # Маска 0x000FFFF0 -- биты 4..19: подписка с I кв. 2021 по IV кв. 2024.
+    sample = _license_frame(0x000FFFF0)
+    licenses = shtrih.parse_function_licenses(sample)
+    assert licenses["subscription"] == {
+        "from": "01.01.2021", "to": "31.12.2024", "quarters": 16,
+    }
+
+
+def test_разбор_лицензий_пустая_маска_говорит_что_подписки_нет():
+    # Нулевая маска -- это не рваный разбор, а честное «подписки нет»:
+    # путать одно с другим панель не должна.
+    licenses = shtrih.parse_function_licenses(_license_frame(0))
+    assert licenses["subscription"] is None
+    assert "подписки на обновление нет" in licenses["note"]
+
+
+def test_разбор_лицензий_несплошная_маска_даёт_none_с_note():
+    # Дыра в маске: биты 0 и 2 взведены, бит 1 -- нет.
+    sample = _license_frame(0b101)
+    licenses = shtrih.parse_function_licenses(sample)
+    assert licenses["subscription"] is None
+    assert licenses["note"]
+    assert licenses["hex"] == sample
+
+
+def test_разбор_лицензий_строка_из_дефисов_пустое_поле():
+    licenses = shtrih.parse_function_licenses("-" * 128)
+    assert licenses["hex"] is None
+    assert licenses["subscription"] is None
+
+
+def test_разбор_лицензий_неверная_длина_даёт_note_про_128():
+    licenses = shtrih.parse_function_licenses("ab" * 10)
+    assert licenses["subscription"] is None
+    assert "128" in licenses["note"]

@@ -574,6 +574,12 @@
           <dd id="svc-license">—</dd>
           <dd class="sub" id="svc-license-note"></dd>
         </div>
+        <div class="gauge">
+          <dt>Функциональные лицензии</dt>
+          <dd id="svc-licenses">—</dd>
+          <dd class="sub" id="svc-licenses-hex" style="font-family:var(--mono);word-break:break-all;color:var(--dim)"></dd>
+          <dd class="sub" id="svc-licenses-note"></dd>
+        </div>
         <div class="gauge"><dt>Расхождение часов</dt><dd id="svc-drift" style="font-size:12px">—</dd></div>
         <div class="gauge"><dt>Скорость ухода</dt><dd id="svc-rate" style="font-size:12px">—</dd></div>
       </dl>
@@ -1375,7 +1381,7 @@ async function loadLog() {
 
 const SVC_FIELDS = ['svc-expiry', 'svc-version', 'svc-fisc-at', 'svc-reg',
                      'svc-sno', 'svc-fisc-fd', 'svc-unconfirmed', 'svc-registrations',
-                     'svc-license'];
+                     'svc-license', 'svc-licenses'];
 
 async function loadService(retried = false) {
   const fail = (text) => {
@@ -1475,6 +1481,20 @@ async function loadService(retried = false) {
         + 'не описана и взята из открытого драйвера Штрих-М; расшифровать '
         + 'можно, только сверив с тем, что печатает техпрогон.';
     }
+    if (s.subscription) {
+      const sub = s.subscription;
+      $('svc-licenses').textContent =
+        `Подписка на обновление: с ${sub.from} по ${sub.to} (${sub.quarters} кв.)`;
+      $('svc-licenses').style.color = '';
+    } else {
+      $('svc-licenses').textContent = s.license_functions_note || 'разобрать не удалось';
+      $('svc-licenses').style.color = 'var(--dim)';
+    }
+    $('svc-licenses-hex').textContent = s.license_functions || '';
+    $('svc-licenses-note').textContent =
+      'Таблица 23 поле 15. Разобран только срок подписки, и по одному '
+      + 'образцу — сверен с тем, что печатает Тест Драйвера. Остальные '
+      + 'байты не расшифрованы.';
     ffdBlocked = !!s.ffd_blocked;
     updateFfdButton(ffdBlocked);
     $('ffd-blocked').hidden = !ffdBlocked;

@@ -391,6 +391,88 @@ def _clock(b: bytes) -> str:
     return f"{b[0]:02d}:{b[1]:02d}:{b[2]:02d}"
 
 
+# Таблица 23 «УДАЛЕННЫЙ МОНИТОРИНГ И АДМИНИСТРИРОВАНИЕ», поле 15
+# «ЛИЦЕНЗИИ ФУНКЦИЙ» (char, 128 байт): 128 символов строчного шестнадцатеричного
+# текста, то есть 64 байта. Раскладка на живой кассе — три восьмибайтовые
+# записи (в каждой значащие только младшие 4 байта, little-endian), затем
+# 40 байт, похожих на подпись.
+_LICENSE_TEXT_LEN = 128       # длина поля в символах (64 байта в hex-виде)
+_SUBSCRIPTION_OFFSET = 8      # смещение (в байтах) записи с маской кварталов
+_SUBSCRIPTION_EPOCH_YEAR = 2020   # квартал 0 -- I квартал этого года
+_QUARTER_START = {0: "01.01", 1: "01.04", 2: "01.07", 3: "01.10"}
+_QUARTER_END = {0: "31.03", 1: "30.06", 2: "30.09", 3: "31.12"}
+
+
+def parse_function_licenses(raw: "str | bytes | None") -> dict:
+    """
+    Разбор поля 15 таблицы 23 -- функциональных лицензий ККТ.
+
+    Разбор сделан по ОДНОМУ образцу с живой кассы 26.08.2026 и подтверждён
+    сверкой с выводом Теста Драйвера Windows на этой же кассе: там же лежит
+    0x01FFFFFF -- 25 подряд взведённых битов, а Тест Драйвера печатает
+    «Подписка на обновление: действительна c 01.01.2020 по 31.03.2026»
+    (от I кв. 2020 до I кв. 2026 -- ровно 25 кварталов). Смещение подписки
+    на втором образце не проверялось. Записи по смещениям 0 и 16 (тоже
+    восьмибайтовые, тоже значащие только младшие 4 байта) не разобраны --
+    их смысл неизвестен, придумывать его нельзя.
+
+    Возвращает словарь с ключами `hex`, `subscription`, `note`:
+      hex -- нормализованная строчная hex-строка длиной 128 символов,
+             либо None, если разбирать нечего;
+      subscription -- None либо словарь {from, to, quarters}
+             (from/to -- «ДД.ММ.ГГГГ», quarters -- число кварталов);
+      note -- причина, по которой что-то не разобралось, либо None.
+    """
+    if isinstance(raw, bytes):
+        text = raw.split(b"\x00")[0].decode("cp1251", errors="replace")
+    else:
+        text = raw or ""
+    text = text.strip()
+
+    if text == "" or set(text) == {"-"}:
+        return {"hex": None, "subscription": None,
+                "note": "поле пустое: лицензий в кассе нет"}
+
+    is_hex = all(c in "0123456789abcdefABCDEF" for c in text)
+
+    if not is_hex or len(text) != _LICENSE_TEXT_LEN:
+        return {
+            "hex": text[:_LICENSE_TEXT_LEN],
+            "subscription": None,
+            "note": (
+                f"ожидалось {_LICENSE_TEXT_LEN} шестнадцатеричных символов, "
+                f"пришло {len(text)}"
+            ),
+        }
+
+    hex_text = text.lower()
+    raw_bytes = bytes.fromhex(hex_text)
+    mask = int.from_bytes(
+        raw_bytes[_SUBSCRIPTION_OFFSET:_SUBSCRIPTION_OFFSET + 4], "little"
+    )
+
+    if mask == 0:
+        return {"hex": hex_text, "subscription": None,
+                "note": "подписки на обновление нет: маска кварталов пуста"}
+
+    lo = (mask & -mask).bit_length() - 1
+    hi = mask.bit_length() - 1
+    if (mask >> lo) != (1 << (hi - lo + 1)) - 1:
+        return {"hex": hex_text, "subscription": None,
+                "note": "маска кварталов не сплошная, разобрать период нельзя"}
+
+    def _quarter_date(q: int, table: dict) -> str:
+        year = _SUBSCRIPTION_EPOCH_YEAR + q // 4
+        return f"{table[q % 4]}.{year}"
+
+    subscription = {
+        "from": _quarter_date(lo, _QUARTER_START),
+        "to": _quarter_date(hi, _QUARTER_END),
+        "quarters": hi - lo + 1,
+    }
+    return {"hex": hex_text, "subscription": subscription, "note": None}
+
+
 @dataclass
 class Response:
     command: bytes
