@@ -1673,7 +1673,7 @@ def punch_receipt(req: ReceiptRequest):
         raise HTTPException(400, f"Оплата {paid:.2f} меньше суммы чека {total:.2f}")
     if req.electronic > total + 0.01:
         raise HTTPException(
-            400, "Электронными нельзя заплатить больше суммы чека: сдачи с них не бывает"
+            400, "Безналичными нельзя заплатить больше суммы чека: сдачи с них не бывает"
         )
 
     doc_type = {
