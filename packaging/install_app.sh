@@ -88,7 +88,13 @@ start_server() {
   cd "$PROJECT"
   nohup "$PROJECT/.venv/bin/python" app.py --port "$PORT" --strict-port >>"$LOG" 2>&1 &
   SERVER_PID=$!
-  for _ in $(seq 1 40); do            # ждём до 20 секунд
+  # Ждём не фиксированные 20 секунд, а пока жив процесс сервера: первый запуск
+  # после пересборки бандла стоит на запросах macOS о доступе к диску и к
+  # локальной сети, и пока человек не ответил, сервер не стартует. Если
+  # приложение погаснет раньше, сервер потом поднимется уже без доступа к сети.
+  # Предел 3 минуты — чтобы зависший сервер не держал лаунчер вечно.
+  for _ in $(seq 1 360); do
+    kill -0 "$SERVER_PID" 2>/dev/null || break
     running && break
     sleep 0.5
   done
@@ -119,6 +125,12 @@ if running; then
   fi
 else
   start_server
+fi
+
+# Сервер не ответил, но процесс жив (вышли по пределу ожидания): гасим его,
+# чтобы не оставлять на порту сироту, которой macOS режет сеть.
+if ! running && [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+  kill "$SERVER_PID" 2>/dev/null
 fi
 
 running || fail "Касса не поднялась на порту $PORT. Последние строки kassa.log:
