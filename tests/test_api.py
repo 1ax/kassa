@@ -53,6 +53,7 @@ def client(tmp_path, monkeypatch):
     )
     demo.DemoKKT.state["ops"] = []
     demo.DemoKKT.state["docs"] = []
+    demo.DemoKKT.state["payment_names"] = list(demo._DEMO_PAYMENT_NAMES)
     # base_url важен: сервер принимает только локальное имя хоста,
     # а TestClient по умолчанию представляется как «testserver».
     return TestClient(kassa_app.app, base_url="http://127.0.0.1")
@@ -1194,6 +1195,48 @@ def test_поля_таблицы_19_отдают_char_строкой_bin_чис�
     assert fields[2]["type"] == "bin"
     assert fields[2]["value"] == 7443
     assert isinstance(fields[2]["raw"], str) and fields[2]["raw"]
+
+
+# --- Запись названий типов оплаты (1Eh, таблица 5) -------------------------
+
+def test_запись_названия_типа_оплаты_читается_обратно(client):
+    r = client.post("/api/payment-names/2", json={"name": "ПЕРЕВОДОМ"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "row": 2, "name": "ПЕРЕВОДОМ"}
+    r = client.get("/api/tables/5", params={"row": 2})
+    assert r.json()["fields"][0]["value"] == "ПЕРЕВОДОМ"
+
+
+def test_запись_названия_обрезает_пробелы_и_не_трогает_регистр(client):
+    r = client.post("/api/payment-names/3", json={"name": "  Через СБП "})
+    assert r.json()["name"] == "Через СБП"
+
+
+@pytest.mark.parametrize("row", [0, 17])
+def test_запись_названия_отвергает_ряд_вне_1_16(client, row):
+    r = client.post(f"/api/payment-names/{row}", json={"name": "ПЕРЕВОДОМ"})
+    assert r.status_code == 400
+
+
+@pytest.mark.parametrize("name", [
+    "   ",                  # пустое после strip
+    "А" * 65,               # 65 байт в CP1251 при размере поля 64
+    "ł",                    # нет в CP1251
+    "😀",                   # нет в CP1251
+    "ПЕРЕ\nВОДОМ",          # управляющий символ
+    "ПЕРЕ\x00ВОДОМ",
+])
+def test_запись_названия_отвергает_плохое_имя(client, name):
+    before = list(demo.DemoKKT.state["payment_names"])
+    r = client.post("/api/payment-names/2", json={"name": name})
+    assert r.status_code == 400
+    assert demo.DemoKKT.state["payment_names"] == before
+
+
+def test_запись_названия_длиной_ровно_64_байта_проходит(client):
+    r = client.post("/api/payment-names/2", json={"name": "Б" * 64})
+    assert r.status_code == 200
+    assert r.json()["name"] == "Б" * 64
 
 
 def test_несуществующая_таблица_не_роняет_сервер(client):

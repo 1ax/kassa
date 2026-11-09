@@ -1371,6 +1371,56 @@ def table_detail(number: int, row: int = 1):
         raise _fail(exc)
 
 
+PAYMENT_NAMES_TABLE = 5     # «Наименование типов оплаты»
+PAYMENT_NAMES_ROWS = 16
+
+
+class PaymentName(BaseModel):
+    name: str
+
+
+@app.post("/api/payment-names/{row}")
+def set_payment_name(row: int, body: PaymentName):
+    """
+    Записать название типа оплаты в таблицу 5 ККТ (команда 1Eh).
+
+    Ничего не печатает, но меняет настройки кассы. Номер таблицы и поля
+    зашиты в код: другие таблицы эндпоинт не принимает. Тип 2 печатается
+    под «ПОЛУЧЕНО:» при оплате безналичными.
+    """
+    _refuse_if_stale()
+    if not 1 <= row <= PAYMENT_NAMES_ROWS:
+        raise HTTPException(400, f"Номер ряда должен быть от 1 до {PAYMENT_NAMES_ROWS}")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Название не может быть пустым")
+    if any(ord(ch) < 32 for ch in name):
+        raise HTTPException(400, "В названии нельзя использовать управляющие символы")
+    try:
+        encoded = name.encode("cp1251")
+    except UnicodeEncodeError as exc:
+        bad = name[exc.start]
+        raise HTTPException(
+            400, f"Символ «{bad}» не поддерживается кассой (кодировка CP1251)")
+
+    def run(k):
+        fs = k.field_structure(PAYMENT_NAMES_TABLE, 1)
+        if fs["type"] != "char":
+            raise ValueError("Поле названия типа оплаты в кассе не текстовое")
+        if len(encoded) > fs["size"]:
+            raise ValueError(f"Название не длиннее {fs['size']} байт")
+        value = encoded + b"\x00" * (fs["size"] - len(encoded))
+        k.write_table(PAYMENT_NAMES_TABLE, row, 1, value)
+        raw = k.read_table(PAYMENT_NAMES_TABLE, row, 1)
+        return raw.split(b"\x00")[0].decode("cp1251", errors="replace").strip()
+
+    try:
+        saved = with_kkt(run)
+    except Exception as exc:
+        raise _fail(exc)
+    return {"ok": True, "row": row, "name": saved}
+
+
 @app.get("/api/device")
 def device():
     try:

@@ -637,9 +637,9 @@
     <section class="panel" id="panel-tables" hidden>
       <h2>Таблицы кассы<button class="panel-close" onclick="showPanel(null)">× закрыть</button></h2>
       <p style="font-size:11px;color:var(--dim);line-height:1.5;margin:8px 0">
-        Панель только читает таблицы ККТ (команды 1Fh/2Dh/2Eh) — записи
-        в таблицы в программе нет вовсе, испортить настройки кассы отсюда
-        нельзя.
+        Панель читает таблицы ККТ (команды 1Fh/2Dh/2Eh). Писать из неё можно
+        только в таблицу 5 «Наименование типов оплаты» (команда 1Eh), остальные
+        таблицы программа не меняет.
       </p>
       <div id="tables-error" class="msg err" style="display:none;margin-bottom:10px"></div>
       <div id="tables-list"></div>
@@ -648,10 +648,18 @@
         <legend id="tables-detail-title">Поля таблицы</legend>
         <div class="row" style="grid-template-columns:110px auto;margin-bottom:10px">
           <div><label for="tables-row">Ряд</label>
-            <input type="number" id="tables-row" class="num" value="1" min="1"></div>
+            <input type="number" id="tables-row" class="num" value="1" min="1" oninput="disarmWrite()"></div>
           <div style="align-self:end"><button class="minor" onclick="loadTableFields()">Показать</button></div>
         </div>
         <div id="tables-fields" style="font-family:var(--mono);font-size:11px;line-height:1.6"></div>
+        <div id="tables-write" style="display:none;margin-top:12px">
+          <label for="tables-write-name">Новое название типа оплаты</label>
+          <input type="text" id="tables-write-name" maxlength="64">
+          <p style="font-size:11px;color:var(--dim);line-height:1.5;margin:6px 0">
+            Тип 2 — это то, что печатается под «ПОЛУЧЕНО:» при оплате безналичными.
+          </p>
+          <button class="minor" id="tables-write-btn" onclick="writePaymentName()">Записать в кассу</button>
+        </div>
       </fieldset>
     </section>
 
@@ -1723,9 +1731,41 @@ function selectTable(number) {
   loadTableFields();
 }
 
+// Запись названия типа оплаты (1Eh) — только таблица 5. Подтверждение
+// вторым нажатием: confirm() в интерфейсе не используем.
+let writeArmTimer = null;
+let writeRow = null;
+
+function disarmWrite() {
+  clearTimeout(writeArmTimer);
+  writeArmTimer = null;
+  $('tables-write-btn').textContent = 'Записать в кассу';
+}
+
+async function writePaymentName() {
+  if (busy) return;
+  if (writeArmTimer === null) {
+    $('tables-write-btn').textContent = 'Точно записать? Нажмите ещё раз';
+    writeArmTimer = setTimeout(disarmWrite, 5000);
+    return;
+  }
+  disarmWrite();
+  const row = writeRow;
+  const name = $('tables-write-name').value;
+  await guard('Записываю название в таблицу кассы…', async () => {
+    try {
+      const j = await post(`/api/payment-names/${row}`, { name });
+      say(`Записано: ${j.name}`, 'ok');
+      await loadTableFields();
+    } catch (e) { say(e.message, 'err'); }
+  });
+}
+
 async function loadTableFields() {
   if (tablesSelected === null) return;
   const row = Math.max(1, +$('tables-row').value || 1);
+  disarmWrite();
+  $('tables-write').style.display = 'none';
   $('tables-fields').textContent = 'Читаю…';
   try {
     const r = await fetch(`/api/tables/${tablesSelected}?row=${row}`);
@@ -1748,6 +1788,11 @@ async function loadTableFields() {
         <div>${esc(String(f.value))}<span style="color:var(--dim);font-size:10px">
           &nbsp;&nbsp;${esc(f.raw)}</span></div>
       </div>`).join('') || '<p style="color:var(--dim)">В таблице нет полей</p>';
+    if (s.number === 5 && s.fields && s.fields.length) {
+      writeRow = s.row;
+      $('tables-write-name').value = s.fields[0].value;
+      $('tables-write').style.display = '';
+    }
   } catch (e) {
     $('tables-fields').textContent = 'Не удалось прочитать поля таблицы';
   }

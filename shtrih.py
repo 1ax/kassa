@@ -45,6 +45,7 @@ CMD_LONG_STATUS = b"\x11"        # Запрос состояния ККТ
 CMD_BEEP = b"\x13"               # Гудок
 CMD_READ_LICENSE = b"\x1d"       # Прочитать лицензию (в спецификации нет)
 CMD_READ_TABLE = b"\x1f"         # Чтение таблицы
+CMD_WRITE_TABLE = b"\x1e"        # Запись таблицы
 CMD_SET_TIME = b"\x21"           # Программирование времени
 CMD_SET_DATE = b"\x22"           # Программирование даты
 CMD_CONFIRM_DATE = b"\x23"       # Подтверждение программирования даты
@@ -765,6 +766,26 @@ class KKT:
         )
         r = self.execute(CMD_READ_TABLE, data)
         return r.data
+
+    def write_table(self, table: int, row: int, field: int, value: bytes) -> None:
+        """
+        Команда 1Eh. Меняет настройки ККТ без печати; прогон на живой
+        кассе — только с разрешения владельца.
+
+        Запрос: пароль сисадмина (4 байта) + таблица (1 байт) + ряд
+        (2 байта LE) + поле (1 байт) + значение (X байт). Ответ: код ошибки.
+
+        Сырой уровень: длину и кодировку значения метод не знает и не
+        проверяет — это забота вызывающего (см. field_structure).
+        """
+        data = (
+            password(self.admin_password)
+            + bytes([table])
+            + row.to_bytes(2, "little")
+            + bytes([field])
+            + value
+        )
+        self.execute(CMD_WRITE_TABLE, data)
 
     def table_structure(self, table: int) -> dict:
         """

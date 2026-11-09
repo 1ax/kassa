@@ -32,7 +32,22 @@ _DEMO_FFD_CODE = _FFD_CODE_BY_VERSION.get(os.environ.get("KASSA_DEMO_FFD", ""), 
 # Нужны только чтобы панель было на чём посмотреть без подключённой ККТ.
 # У каждой таблицы одна заполненная строка (row=1); запрос другого номера
 # ряда, таблицы или поля эмулирует отказ кассы, как и полагается по протоколу.
+_DEMO_PAYMENT_NAMES = (
+    ["НАЛИЧНЫМИ", "КАРТОЙ МИР", "КАРТОЙ VISA", "КАРТОЙ MASTERCARD"]
+    + [f"РАСШИРЕННАЯ ОПЛАТА {i}" for i in range(1, 10)]
+    + ["ПРЕДВАРИТЕЛЬНАЯ ОПЛАТА (АВАНС)", "ПОСЛЕДУЮЩАЯ ОПЛАТА (КРЕДИТ)",
+       "ИНАЯ ФОРМА ОПЛАТЫ"]
+)
+
 DEMO_TABLES = {
+    5: {
+        "name": "НАИМЕНОВАНИЕ ТИПОВ ОПЛАТЫ",
+        "rows": 16,
+        "fields": {
+            1: {"name": "ЗАПРОГРАММИРОВАННЫЕ ТИПЫ ОПЛАТЫ", "type": "char",
+                "size": 64, "value": ""},
+        },
+    },
     1: {
         "name": "Тип и режимы ККТ",
         "rows": 1,
@@ -160,6 +175,10 @@ class DemoKKT:
         # Тесты порядка FF4Dh/FF46h переключают на модели кассового ядра
         # и ШТРИХ-МОБАЙЛ-Ф (16, 19, 20, 21, 45, 46).
         "model": 250,
+        # Таблица 5 «Наименование типов оплаты» (16 рядов, поле 1 — CHAR 64).
+        # Раскладка снята с живой кассы 09.11.2026; значения — типовые
+        # заводские названия. Меняется командой записи таблицы (1Eh).
+        "payment_names": list(_DEMO_PAYMENT_NAMES),
     }
 
     def __init__(self, *args, **kwargs):
@@ -267,14 +286,28 @@ class DemoKKT:
         t = DEMO_TABLES.get(table)
         if t is None:
             raise shtrih.KKTError(0x50, "Неверный номер таблицы")
-        if row != 1:
+        if not 1 <= row <= t["rows"] or (table != 5 and row != 1):
             raise shtrih.KKTError(0x52, "Неверный номер ряда")
         f = t["fields"].get(field)
         if f is None:
             raise shtrih.KKTError(0x51, "Неверный номер поля")
+        if table == 5:
+            return shtrih.text_field(self.state["payment_names"][row - 1], f["size"])
         if f["type"] == "char":
             return shtrih.text_field(f["value"], f["size"])
         return int(f["value"]).to_bytes(f["size"], "little")
+
+    def write_table(self, table: int, row: int, field: int, value: bytes) -> None:
+        """Эмулятор пишет только таблицу 5, как и сама программа."""
+        if table != 5:
+            raise shtrih.KKTError(0x50, "Неверный номер таблицы")
+        if not 1 <= row <= 16:
+            raise shtrih.KKTError(0x52, "Неверный номер ряда")
+        if field != 1:
+            raise shtrih.KKTError(0x51, "Неверный номер поля")
+        self.state["payment_names"][row - 1] = (
+            value.split(b"\x00")[0].decode("cp1251", errors="replace")
+        )
 
     def fn_expiry(self) -> dict:
         year = date.today().year + 2

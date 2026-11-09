@@ -734,6 +734,24 @@ def test_read_table_отдаёт_сырые_байты_без_интерпрет
     assert k.read_table(19, 1, 2) == bytes([0x1F, 0x1F])
 
 
+def test_запись_таблицы_1e_несёт_поля_на_своих_местах_и_реальные_64_байта():
+    # Значение — настоящие 64 байта поля 1 таблицы 5, ряд 2, снятые с живой
+    # кассы 09.11.2026 командой 1Fh: «КАРТОЙ МИР» и 54 нулевых байта.
+    value = bytes.fromhex("CAC0D0D2CEC920CCC8D0") + b"\x00" * 54
+    assert len(value) == 64 and value[:10].decode("cp1251") == "КАРТОЙ МИР"
+    k = shtrih.KKT("stub", 0, admin_password=30)
+    k._sock = FakeSocket([b"\x1e\x00"])
+    assert k.write_table(5, 2, 1, value) is None
+    frame = frames_sent(k)[0]
+    assert frame[2:3] == shtrih.CMD_WRITE_TABLE == b"\x1e"
+    assert frame[1] == 9 + 64                  # CMD(1) + пароль(4) + табл(1) + ряд(2) + поле(1) + значение
+    assert frame[3:7] == shtrih.password(30)
+    assert frame[7] == 5
+    assert frame[8:10] == b"\x02\x00"
+    assert frame[10] == 1
+    assert frame[11:75] == value
+
+
 def test_короткий_ответ_2d_поднимает_protocolerror():
     # Обещано 43 байта данных (имя 40 + рядов 2 + полей 1), пришло меньше.
     k = kkt_with([b"\x2d\x00" + bytes(10)])
