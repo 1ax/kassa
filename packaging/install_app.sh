@@ -153,9 +153,16 @@ chmod +x "$APP/Contents/Resources/kassa-launcher.sh"
 # Главный исполняемый файл бандла — маленькая скомпилированная программа.
 # macOS выдаёт разрешение «Локальная сеть» (и вообще спрашивает о нём) только
 # скомпилированному приложению; если CFBundleExecutable — bash-скрипт, сеть
-# молча режется (ошибка No route to host). Программа лишь запускает
-# Resources/kassa-launcher.sh и возвращает его код выхода; скрипт же не выходит,
-# пока жив запущенный им сервер, — так приложение остаётся в фоне вместе с ним.
+# молча режется (ошибка No route to host). Программа запускает
+# Resources/kassa-launcher.sh и завершается, когда он выходит; скрипт же не
+# выходит, пока жив запущенный им сервер, — так приложение остаётся в фоне
+# вместе с ним.
+# Написана на Cocoa (NSApplication), а не на голом C: при повторном клике по
+# иконке macOS шлёт работающему приложению Apple-событие reopen, и без цикла
+# событий ответа нет — «Программа «Касса» не отвечает». Обработчик reopen ТОЛЬКО
+# открывает адрес интерфейса и скрипт заново не запускает: повторный запуск
+# мог бы перезапустить «устаревший» сервер, первый bash вышел бы из ожидания,
+# приложение погасло бы, и новый сервер остался бы без доступа к сети.
 if xcrun --find clang >/dev/null 2>&1; then
   CC_CMD=(xcrun clang)
 elif command -v cc >/dev/null 2>&1; then
@@ -168,43 +175,60 @@ fi
 BUILD="$(mktemp -d)"
 trap 'rm -rf "$BUILD"' EXIT
 
-cat > "$BUILD/launcher.c" <<'CSRC'
-#include <limits.h>
-#include <libgen.h>
-#include <mach-o/dyld.h>
-#include <spawn.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/wait.h>
+cat > "$BUILD/launcher.m" <<'CSRC'
+#import <Cocoa/Cocoa.h>
 
-extern char **environ;
+@interface KassaDelegate : NSObject <NSApplicationDelegate>
+/* Держим ссылку, пока скрипт жив: иначе ARC вправе освободить NSTask */
+@property (strong) NSTask *task;
+@end
+
+@implementation KassaDelegate
+
+- (void)applicationDidFinishLaunching:(NSNotification *)note {
+    NSString *script = [[NSBundle mainBundle] pathForResource:@"kassa-launcher"
+                                                       ofType:@"sh"];
+    if (!script) {
+        [NSApp terminate:nil];
+        return;
+    }
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:@"/bin/bash"];
+    task.arguments = @[script];
+    task.terminationHandler = ^(NSTask *t) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
+    };
+    NSError *error = nil;
+    self.task = task;
+    if (![task launchAndReturnError:&error]) {
+        [NSApp terminate:nil];
+    }
+}
+
+/* Повторный клик по иконке: только открыть интерфейс, скрипт не трогать. */
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)sender
+                    hasVisibleWindows:(BOOL)flag {
+    [[NSWorkspace sharedWorkspace]
+        openURL:[NSURL URLWithString:@KASSA_URL]];
+    return NO;
+}
+
+@end
 
 int main(void) {
-    char raw[PATH_MAX], self[PATH_MAX], dir[PATH_MAX], script[PATH_MAX];
-    uint32_t size = sizeof(raw);
-
-    /* свой путь -> .../Contents/MacOS/kassa-launcher, симлинки раскрыты */
-    if (_NSGetExecutablePath(raw, &size) != 0 || !realpath(raw, self)) return 1;
-
-    /* два раза dirname: MacOS -> Contents; скрипт лежит в Contents/Resources */
-    strlcpy(dir, self, sizeof(dir));
-    strlcpy(dir, dirname(dir), sizeof(dir));
-    strlcpy(dir, dirname(dir), sizeof(dir));
-    if (snprintf(script, sizeof(script), "%s/Resources/kassa-launcher.sh", dir)
-            >= (int)sizeof(script)) return 1;
-
-    char *argv[] = {"/bin/bash", script, NULL};
-    pid_t pid;
-    if (posix_spawn(&pid, "/bin/bash", NULL, NULL, argv, environ) != 0) return 1;
-
-    int status;
-    if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status)) return 1;
-    return WEXITSTATUS(status);
+    @autoreleasepool {
+        NSApplication *app = [NSApplication sharedApplication];
+        KassaDelegate *delegate = [[KassaDelegate alloc] init];
+        app.delegate = delegate;
+        [app run];
+    }
+    return 0;
 }
 CSRC
 
-"${CC_CMD[@]}" -O2 -Wall -o "$APP/Contents/MacOS/kassa-launcher" "$BUILD/launcher.c"
+"${CC_CMD[@]}" -O2 -Wall -fobjc-arc -framework Cocoa \
+  -DKASSA_URL="\"http://127.0.0.1:$PORT\"" \
+  -o "$APP/Contents/MacOS/kassa-launcher" "$BUILD/launcher.m"
 
 # Подпись ставим последней, когда в бандле уже лежит всё (бинарь и скрипт в
 # Resources) — она покрывает оба. Без подписи macOS не заводит приложению запись
