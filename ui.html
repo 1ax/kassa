@@ -1263,6 +1263,11 @@ function fillFpd() {
 
 // --- приборы ---
 
+// Сколько опросов подряд касса сообщила «чек открыт». Сразу после закрытия
+// чека она на мгновение отвечает режимом 8, пока допечатывает его (проверено
+// на живой кассе 09.11.2026, ФД 30) — предупреждаем только со второго ответа.
+let receiptOpenSeen = 0;
+
 async function status() {
   try {
     const s = await (await fetch('/api/status')).json();
@@ -1270,6 +1275,7 @@ async function status() {
     $('demo-bar').hidden = !s.demo;
     $('stale').hidden = !s.stale;
     if (!s.online) {
+      receiptOpenSeen = 0;
       lamp.className = 'lamp off';
       $('link').textContent = s.busy ? 'касса занята'
         : (s.no_host ? 'адрес не задан' : 'нет связи');
@@ -1324,7 +1330,8 @@ async function status() {
     // по крышке не поднимаем — ложное «крышка открыта» каждые 5 секунд хуже,
     // чем его отсутствие.
     if (!s.paper && !busy) say('В кассе кончилась бумага', 'err');
-    if (s.receipt_open && !busy)
+    if (!s.busy) receiptOpenSeen = s.receipt_open ? receiptOpenSeen + 1 : 0;
+    if (!s.busy && receiptOpenSeen >= 2 && !busy)
       say('В кассе висит открытый чек. Аннулируйте его перед новой операцией.', 'err');
   } catch (e) {
     $('lamp').className = 'lamp off';
