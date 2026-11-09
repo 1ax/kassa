@@ -3,7 +3,8 @@
 # Собирает Kassa.app и кладёт его в Программы.
 #
 # Клик по иконке поднимает сервер и открывает браузер. Повторный клик второй
-# сервер не плодит — просто открывает вкладку на том же адресе.
+# сервер не плодит — просто открывает вкладку на том же адресе. Приложение
+# остаётся работать в фоне (без значка в Dock), пока работает запущенный им сервер.
 #
 #     ./packaging/install_app.sh
 #
@@ -40,21 +41,26 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>       <string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>LSMinimumSystemVersion</key>    <string>11.0</string>
-  <!-- Иконка запускает сервер и гаснет: держать её в Dock незачем -->
+  <!-- Приложение живёт в фоне, пока жив сервер: значок в Dock не нужен -->
   <key>LSUIElement</key>               <true/>
+  <!-- Без этого ключа macOS молча отказывает в доступе к локальной сети
+       (ошибка No route to host) и даже не спрашивает разрешения -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Касса подключается к фискальному регистратору в локальной сети.</string>
 </dict>
 </plist>
 PLIST
 
-cat > "$APP/Contents/MacOS/kassa-launcher" <<LAUNCHER
+cat > "$APP/Contents/Resources/kassa-launcher.sh" <<LAUNCHER
 #!/bin/bash
 # Собран install_app.sh из $PROJECT — правки вносить там, не здесь.
 PROJECT="$PROJECT"
 PORT="$PORT"
 LAUNCHER
-cat >> "$APP/Contents/MacOS/kassa-launcher" <<'LAUNCHER'
+cat >> "$APP/Contents/Resources/kassa-launcher.sh" <<'LAUNCHER'
 URL="http://127.0.0.1:$PORT"
 LOG="$PROJECT/kassa.log"
+SERVER_PID=""
 
 fail() {
   osascript -e "display dialog \"$1\" with title \"Касса\" buttons {\"Ладно\"} default button 1 with icon stop" >/dev/null 2>&1
@@ -81,6 +87,7 @@ running() {
 start_server() {
   cd "$PROJECT"
   nohup "$PROJECT/.venv/bin/python" app.py --port "$PORT" --strict-port >>"$LOG" 2>&1 &
+  SERVER_PID=$!
   for _ in $(seq 1 40); do            # ждём до 20 секунд
     running && break
     sleep 0.5
@@ -119,10 +126,83 @@ running || fail "Касса не поднялась на порту $PORT. По�
 $(tail -n 12 "$LOG" 2>/dev/null)"
 
 open "$URL"
+
+# macOS даёт серверу доступ к локальной сети, только пока жив процесс
+# приложения, которое его запустило. Без ожидания приложение гаснет сразу после
+# открытия браузера, и касса уходит «не в сети» (No route to host). Если сервер
+# поднят раньше — не ждём: его держит живым то приложение, что его запустило.
+if [ -n "$SERVER_PID" ]; then
+  wait "$SERVER_PID"
+fi
 LAUNCHER
 
-chmod +x "$APP/Contents/MacOS/kassa-launcher"
+chmod +x "$APP/Contents/Resources/kassa-launcher.sh"
+
+# Главный исполняемый файл бандла — маленькая скомпилированная программа.
+# macOS выдаёт разрешение «Локальная сеть» (и вообще спрашивает о нём) только
+# скомпилированному приложению; если CFBundleExecutable — bash-скрипт, сеть
+# молча режется (ошибка No route to host). Программа лишь запускает
+# Resources/kassa-launcher.sh и возвращает его код выхода; скрипт же не выходит,
+# пока жив запущенный им сервер, — так приложение остаётся в фоне вместе с ним.
+if xcrun --find clang >/dev/null 2>&1; then
+  CC_CMD=(xcrun clang)
+elif command -v cc >/dev/null 2>&1; then
+  CC_CMD=(cc)
+else
+  echo "Не найден компилятор C: нужны инструменты командной строки Xcode: xcode-select --install" >&2
+  exit 1
+fi
+
+BUILD="$(mktemp -d)"
+trap 'rm -rf "$BUILD"' EXIT
+
+cat > "$BUILD/launcher.c" <<'CSRC'
+#include <limits.h>
+#include <libgen.h>
+#include <mach-o/dyld.h>
+#include <spawn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+
+extern char **environ;
+
+int main(void) {
+    char raw[PATH_MAX], self[PATH_MAX], dir[PATH_MAX], script[PATH_MAX];
+    uint32_t size = sizeof(raw);
+
+    /* свой путь -> .../Contents/MacOS/kassa-launcher, симлинки раскрыты */
+    if (_NSGetExecutablePath(raw, &size) != 0 || !realpath(raw, self)) return 1;
+
+    /* два раза dirname: MacOS -> Contents; скрипт лежит в Contents/Resources */
+    strlcpy(dir, self, sizeof(dir));
+    strlcpy(dir, dirname(dir), sizeof(dir));
+    strlcpy(dir, dirname(dir), sizeof(dir));
+    if (snprintf(script, sizeof(script), "%s/Resources/kassa-launcher.sh", dir)
+            >= (int)sizeof(script)) return 1;
+
+    char *argv[] = {"/bin/bash", script, NULL};
+    pid_t pid;
+    if (posix_spawn(&pid, "/bin/bash", NULL, NULL, argv, environ) != 0) return 1;
+
+    int status;
+    if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status)) return 1;
+    return WEXITSTATUS(status);
+}
+CSRC
+
+"${CC_CMD[@]}" -O2 -Wall -o "$APP/Contents/MacOS/kassa-launcher" "$BUILD/launcher.c"
+
+# Подпись ставим последней, когда в бандле уже лежит всё (бинарь и скрипт в
+# Resources) — она покрывает оба. Без подписи macOS не заводит приложению запись
+# в «Локальной сети». Подпись ad-hoc, поэтому после каждой пересборки macOS
+# заново спросит доступ к локальной сети и (если проект на /Volumes) к внешнему
+# диску. Упавший codesign остановит скрипт (set -e) — неподписанный бандл не нужен.
+codesign --force --sign - "$APP"
+
 touch "$APP"                          # чтобы Finder перечитал иконку
 
 echo "Установлено: $APP"
 echo "Адрес интерфейса: http://127.0.0.1:$PORT"
+echo "При первом запуске macOS спросит доступ к локальной сети и (если проект на внешнем диске) к тому — разрешите оба, иначе касса будет «не в сети»."
